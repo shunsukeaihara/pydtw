@@ -1,0 +1,3 @@
+recursive-include pydtw *.pyx *.py
+recursive-include test *.py
+prune pydtw.egg-info
