@@ -17,15 +17,22 @@ ext_modules = [Extension(
 setup(
     name="pydtw",
     description='Fast Imprementation of the Dynamic Wime Warping',
-    version="1.0",
-    long_description=open('README.md').read(),
+    version="1.0.0",
+    long_description=open('README.rst').read(),
     packages=find_packages(),
     install_requires=["numpy", 'nose', 'cython'],
     ext_modules=ext_modules,
     cmdclass={'build_ext': build_ext},
     author='Shunsuke Aihara',
+    author_email="aihara@argmax.jp",
     url='https://github.com/shunsukeaihara/pydtw',
     license="MIT License",
     include_package_data=True,
     test_suite='nose.collector',
-    tests_require=['nose', 'numpy', 'cython'])
+    tests_require=['nose', 'numpy', 'cython'],
+    classifiers=[
+        "Programming Language :: Python",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 2",
+    ]
+)
