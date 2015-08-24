@@ -1,7 +1,7 @@
 pydtw
 =====
 
-Fast Imprementation of the Dynamic Wime Warping For Python.
+Fast Imprementation of the Dynamic Time Warping For Python.
 
 install
 =======
