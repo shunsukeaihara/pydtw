@@ -3,7 +3,7 @@ from unittest import TestCase
 # from nose.tools import eq_
 import numpy as np
 
-from pydtw import dtw1d, dtw2d
+from pydtw import dtw1d, dtw2d, constrainted_dtw1d
 
 
 class DtwTest(TestCase):
@@ -11,6 +11,9 @@ class DtwTest(TestCase):
         a = np.array([0, 0, 1, 1, 2, 4, 2, 1, 2, 0], dtype=np.float64)
         b = np.array([1, 1, 1, 2, 2, 2, 2, 3, 2, 0], dtype=np.float64)
         cost_mat, cost, al_a, al_b = dtw1d(a, b)
+        assert (al_a == np.array([0, 1, 2, 3, 4, 4, 4, 4, 5, 6, 7, 8, 9])).all(), al_a
+        assert (al_b == np.array([0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 8, 8, 9])).all(), al_b
+        cost_mat, cost, al_a, al_b = constrainted_dtw1d(a, b, 2)
         assert (al_a == np.array([0, 1, 2, 3, 4, 4, 4, 4, 5, 6, 7, 8, 9])).all(), al_a
         assert (al_b == np.array([0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 8, 8, 9])).all(), al_b
 

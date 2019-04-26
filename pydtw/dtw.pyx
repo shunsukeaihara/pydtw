@@ -117,8 +117,7 @@ cdef __dtw2d(np.ndarray[np.float64_t, ndim=2, mode="c"] a,
 @cython.wraparound(False)
 cdef double[:, ::1] create_cost_mat_2d(double[:, ::1] a, double[:, ::1] b, int constraint, metric_ptr dist_func):
     cdef double[:, ::1] cost_mat = np.empty((a.shape[0] + 1, b.shape[0] + 1), dtype=np.float64)
-    cost_mat[0, 1:] = INFINITY
-    cost_mat[1:, 0] = INFINITY
+    cost_mat[:] = INFINITY
     cost_mat[0, 0] = 0
     cdef int i, j
     for i in range(1, cost_mat.shape[0]):
