@@ -2,6 +2,7 @@
 from setuptools import setup, find_packages
 import sys
 
+
 try:
     from Cython.Distutils import build_ext
 except ImportError:
@@ -34,11 +35,18 @@ def extensions():
     __builtins__.__NUMPY_SETUP__ = False
     from Cython.Distutils import Extension
     import numpy as np
+    extra_compile_args = ["-O3"]
+    extra_link_args = []
+    if sys.platform == "darwin":
+        extra_compile_args.append("-mmacosx-version-min=10.9")
+        extra_compile_args.append('-stdlib=libc++')
+        extra_link_args.append('-stdlib=libc++')
     return [Extension(
         'pydtw.dtw',
         ["pydtw/dtw.pyx"],
         cython_directives={'language_level': sys.version_info[0]},
-        extra_compile_args=["-O3"],
+        extra_compile_args=extra_compile_args,
+        extra_link_args=extra_link_args,
         include_dirs=[np.get_include()],
         language="c++")
     ]
@@ -47,7 +55,7 @@ def extensions():
 setup(
     name="pydtw",
     description='Fast Imprementation of the Dynamic Wime Warping',
-    version="2.0.0",
+    version="2.0.2",
     long_description=open('README.rst').read(),
     packages=find_packages(),
     setup_requires=["numpy", 'cython'],
