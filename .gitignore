@@ -1,7 +1,8 @@
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
-
+dtw.cpp
+.python-version
 # C extensions
 *.so
 
