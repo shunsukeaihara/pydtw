@@ -22,7 +22,7 @@ Alignment for two 1-dimensional sequences
     import numpy as np
     a = np.random.rand(10)
     b = np.random.rand(15)
-    cost_matrix, alignmend_a, alignmend_b = dtw1d(a, b)
+    cost_matrix, cost, alignmend_a, alignmend_b = dtw1d(a, b)
 
 Alignment for two 2-dimensional sequences
 -----------------------------------------
@@ -34,4 +34,4 @@ Alignment for two 2-dimensional sequences
 
     a = np.random.rand(10, 4)
     b = np.random.rand(15, 4)
-    cost_matrix, alignmend_a, alignmend_b = dtw2d(a, b)
+    cost_matrix, cost, alignmend_a, alignmend_b = dtw2d(a, b)
