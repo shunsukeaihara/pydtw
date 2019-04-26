@@ -1,27 +1,57 @@
 # -*- coding: utf-8 -*-
-from setuptools import setup, Extension, find_packages
-from Cython.Distutils import build_ext
+from setuptools import setup, find_packages
 import sys
-import numpy as np
-sys.path.append('./src')
-sys.path.append('./test')
 
-ext_modules = [Extension(
+try:
+    from Cython.Distutils import build_ext
+except ImportError:
+    def build_ext(*args, **kwargs):
+        from Cython.Distutils import build_ext
+        return build_ext(*args, **kwargs)
+
+
+class lazy_extlist(list):
+    def __init__(self, callback):
+        self._list, self.callback = None, callback
+
+    def c_list(self):
+        if self._list is None:
+            self._list = self.callback()
+        return self._list
+
+    def __iter__(self):
+        for e in self.c_list():
+            yield e
+
+    def __getitem__(self, ii):
+        return self.c_list()[ii]
+
+    def __len__(self):
+        return len(self.c_list())
+
+
+def extensions():
+    __builtins__.__NUMPY_SETUP__ = False
+    from Cython.Distutils import Extension
+    import numpy as np
+    return [Extension(
         'pydtw.dtw',
         ["pydtw/dtw.pyx"],
-        include_dirs=['lib/world', np.get_include()],
+        cython_directives={'language_level': sys.version_info[0]},
         extra_compile_args=["-O3"],
+        include_dirs=[np.get_include()],
         language="c++")
-]
+    ]
+
 
 setup(
     name="pydtw",
     description='Fast Imprementation of the Dynamic Wime Warping',
-    version="1.0.0",
+    version="2.0.0a1",
     long_description=open('README.rst').read(),
     packages=find_packages(),
-    install_requires=["numpy", 'nose', 'cython'],
-    ext_modules=ext_modules,
+    setup_requires=["numpy", 'cython'],
+    ext_modules=lazy_extlist(extensions),
     cmdclass={'build_ext': build_ext},
     author='Shunsuke Aihara',
     author_email="aihara@argmax.jp",
