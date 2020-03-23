@@ -3,7 +3,7 @@ from unittest import TestCase
 # from nose.tools import eq_
 import numpy as np
 
-from pydtw import dtw1d, dtw2d, constrainted_dtw1d, constrainted_dtw2d
+from pydtw import dtw1d, dtw2d, constrained_dtw1d, constrained_dtw2d
 
 
 class DtwTest(TestCase):
@@ -13,7 +13,7 @@ class DtwTest(TestCase):
         cost_mat, cost, al_a, al_b = dtw1d(a, b)
         assert (al_a == np.array([0, 1, 2, 3, 4, 4, 4, 4, 5, 6, 7, 8, 9])).all(), al_a
         assert (al_b == np.array([0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 8, 8, 9])).all(), al_b
-        cost_mat, cost, al_a, al_b = constrainted_dtw1d(a, b, 2)
+        cost_mat, cost, al_a, al_b = constrained_dtw1d(a, b, 2)
         assert (al_a == np.array([0, 1, 2, 3, 4, 4, 4, 4, 5, 6, 7, 8, 9])).all(), al_a
         assert (al_b == np.array([0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 8, 8, 9])).all(), al_b
 
@@ -69,7 +69,7 @@ class DtwTest(TestCase):
                                   11, 12, 12, 13, 14, 15, 16, 17, 18, 19, 19])).all(), al_a
         assert (al_b == np.array([0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13,
                                   14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24])).all(), al_b
-        cost_mat, cost, al_a, al_b = constrainted_dtw2d(a, b, 3)
+        cost_mat, cost, al_a, al_b = constrained_dtw2d(a, b, 3)
         assert (al_a == np.array([0, 0, 1, 2, 3, 4, 5, 6, 6, 7, 8, 9, 10, 11, 11,
                                   11, 12, 12, 13, 14, 15, 16, 17, 18, 19, 19])).all(), al_a
         assert (al_b == np.array([0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13,
