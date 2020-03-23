@@ -1,7 +1,7 @@
 pydtw
 =====
 
-Fast Imprementation of the Dynamic Time Warping For Python.
+Fast Implementation of Dynamic Time Warping for Python.
 
 install
 =======

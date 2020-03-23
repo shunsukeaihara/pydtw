@@ -139,7 +139,7 @@ cdef traceback(double[:, ::1] cost_mat, int ilen, int jlen):
     a.push_back(i)
     b.push_back(j)
     cdef int match
-    while (i > 0 and j > 0):
+    while (i > 0 or j > 0):
         match = d_argmin(cost_mat[i - 1, j - 1], cost_mat[i - 1, j], cost_mat[i, j - 1])
         if match == 0:
             i -= 1
@@ -153,6 +153,4 @@ cdef traceback(double[:, ::1] cost_mat, int ilen, int jlen):
             cost += cost_mat[i, j - 1]
         a.push_back(i)
         b.push_back(j)
-    a.push_back(0)
-    b.push_back(0)
     return a, b, cost
