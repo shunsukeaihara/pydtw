@@ -131,9 +131,9 @@ cdef double[:, ::1] create_cost_mat_2d(double[:, ::1] a, double[:, ::1] b, int c
 @cython.wraparound(False)
 cdef traceback(double[:, ::1] cost_mat, int ilen, int jlen):
     cdef int i, j
-    cdef double cost = 0.0
     i = ilen - 1
     j = jlen - 1
+    cdef double cost = cost_mat[i, j]
     cdef vector[int] a
     cdef vector[int] b
     a.push_back(i)
@@ -144,13 +144,10 @@ cdef traceback(double[:, ::1] cost_mat, int ilen, int jlen):
         if match == 0:
             i -= 1
             j -= 1
-            cost += cost_mat[i - 1, j - 1]
         elif match == 1:
             i -= 1
-            cost += cost_mat[i - 1, j]
         else:
             j -= 1
-            cost += cost_mat[i, j - 1]
         a.push_back(i)
         b.push_back(j)
     return a, b, cost
