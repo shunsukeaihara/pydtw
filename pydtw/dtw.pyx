@@ -49,7 +49,7 @@ def dtw1d(np.ndarray[np.float64_t, ndim=1, mode="c"] a, np.ndarray[np.float64_t,
 @cython.wraparound(False)
 def constrained_dtw1d(np.ndarray[np.float64_t, ndim=1, mode="c"] a, np.ndarray[np.float64_t, ndim=1, mode="c"] b,
                        constraint=0):
-    constraint = max(abs(a.shape[0] - b.shape[0]), constraint)
+    constraint = max(abs(a.shape[0] - b.shape[0])+1, constraint)
     cost_mat, cost, align_a, align_b = __dtw1d(a, b, constraint)
     return cost_mat, cost, align_a, align_b
 
@@ -91,7 +91,7 @@ def dtw2d(np.ndarray[np.float64_t, ndim=2, mode="c"] a,
 @cython.wraparound(False)
 def constrained_dtw2d(np.ndarray[np.float64_t, ndim=2, mode="c"] a,
                        np.ndarray[np.float64_t, ndim=2, mode="c"] b, constraint=0, metric="euclidean"):
-    constraint = max(abs(a.shape[0] - b.shape[0]), constraint)
+    constraint = max(abs(a.shape[0] - b.shape[0])+1, constraint)
     cost_mat, cost, align_a, align_b = __dtw2d(a, b, constraint, metric)
     return cost_mat, cost, align_a, align_b
 
