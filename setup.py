@@ -54,8 +54,8 @@ def extensions():
 
 setup(
     name="pydtw",
-    description='Fast Imprementation of the Dynamic Wime Warping',
-    version="2.0.2",
+    description='Fast Implementation of Dynamic Time Warping',
+    version="2.0.3",
     long_description=open('README.rst').read(),
     packages=find_packages(),
     setup_requires=["numpy", 'cython'],
