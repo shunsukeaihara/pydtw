@@ -52,27 +52,27 @@ def check_constraint(a_shape, b_shape, constraint=0, warn=True):
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
-def dtw1d(np.ndarray[np.float64_t, ndim=1, mode="c"] a, np.ndarray[np.float64_t, ndim=1, mode="c"] b):
+def dtw1d(np.ndarray[np.float64_t, ndim=1, mode="c"] a, np.ndarray[np.float64_t, ndim=1, mode="c"] b, penalty):
     cdef int constraint = abs(a.shape[0] - b.shape[0]) + 1
-    cost_mat, cost, align_a, align_b = __dtw1d(a, b, constraint)
+    cost_mat, cost, align_a, align_b = __dtw1d(a, b, constraint, penalty)
     return cost_mat, cost, align_a, align_b
 
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
 def constrained_dtw1d(np.ndarray[np.float64_t, ndim=1, mode="c"] a, np.ndarray[np.float64_t, ndim=1, mode="c"] b,
-                       constraint=0):
+                      double penalty, constraint=0):
     constraint = check_constraint(a.shape[0],b.shape[0],constraint)
-    cost_mat, cost, align_a, align_b = __dtw1d(a, b, constraint)
+    cost_mat, cost, align_a, align_b = __dtw1d(a, b, constraint, penalty)
     return cost_mat, cost, align_a, align_b
 
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
 cdef __dtw1d(np.ndarray[np.float64_t, ndim=1, mode="c"] a, np.ndarray[np.float64_t, ndim=1, mode="c"] b,
-             int constraint):
+             int constraint, double penalty):
     cdef double[:, ::1] cost_mat = create_cost_mat_1d(a, b, constraint)
-    align_a, align_b, cost = traceback(cost_mat, a.shape[0], b.shape[0])
+    align_a, align_b, cost = traceback(cost_mat, a.shape[0], b.shape[0], penalty)
     align_a.reverse()
     align_b.reverse()
     return cost_mat, cost, align_a, align_b
@@ -95,25 +95,26 @@ cdef double[:, ::1] create_cost_mat_1d(double[::1] a, double[::1]b, int constrai
 @cython.boundscheck(False)
 @cython.wraparound(False)
 def dtw2d(np.ndarray[np.float64_t, ndim=2, mode="c"] a,
-          np.ndarray[np.float64_t, ndim=2, mode="c"] b, metric="euclidean"):
+          np.ndarray[np.float64_t, ndim=2, mode="c"] b, double penalty, metric="euclidean"):
     cdef int constraint = abs(a.shape[0] - b.shape[0]) + 1
-    cost_mat, cost, align_a, align_b = __dtw2d(a, b, constraint, metric)
+    cost_mat, cost, align_a, align_b = __dtw2d(a, b, constraint, metric,penalty)
     return cost_mat, cost, align_a, align_b
 
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
 def constrained_dtw2d(np.ndarray[np.float64_t, ndim=2, mode="c"] a,
-                       np.ndarray[np.float64_t, ndim=2, mode="c"] b, constraint=0, metric="euclidean"):
+                       np.ndarray[np.float64_t, ndim=2, mode="c"] b, double penalty,
+                      constraint=0, metric="euclidean"):
     constraint = check_constraint(a.shape[0],b.shape[0],constraint)
-    cost_mat, cost, align_a, align_b = __dtw2d(a, b, constraint, metric)
+    cost_mat, cost, align_a, align_b = __dtw2d(a, b, constraint, metric, penalty)
     return cost_mat, cost, align_a, align_b
 
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
 cdef __dtw2d(np.ndarray[np.float64_t, ndim=2, mode="c"] a,
-             np.ndarray[np.float64_t, ndim=2, mode="c"] b, int constraint, metric):
+             np.ndarray[np.float64_t, ndim=2, mode="c"] b, int constraint, metric, double penalty):
     assert a.shape[1] == b.shape[1], 'Matrices must have same dimention. a={}, b={}'.format(a.shape[1], b.shape[1])
     cdef metric_ptr dist_func
     if metric == 'euclidean':
@@ -121,7 +122,7 @@ cdef __dtw2d(np.ndarray[np.float64_t, ndim=2, mode="c"] a,
     else:
         raise ValueError("unrecognized metric")
     cdef double[:, ::1] cost_mat = create_cost_mat_2d(a, b, constraint, dist_func)
-    align_a, align_b, cost = traceback(cost_mat, a.shape[0], b.shape[0])
+    align_a, align_b, cost = traceback(cost_mat, a.shape[0], b.shape[0], penalty)
     align_a.reverse()
     align_b.reverse()
     return cost_mat, cost, align_a, align_b
@@ -143,7 +144,7 @@ cdef double[:, ::1] create_cost_mat_2d(double[:, ::1] a, double[:, ::1] b, int c
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
-cdef traceback(double[:, ::1] cost_mat, int ilen, int jlen):
+cdef traceback(double[:, ::1] cost_mat, int ilen, int jlen, double penalty):
     cdef int i, j
     i = ilen - 1
     j = jlen - 1
@@ -160,8 +161,12 @@ cdef traceback(double[:, ::1] cost_mat, int ilen, int jlen):
             j -= 1
         elif match == 1:
             i -= 1
+            cost_mat[i,j] = cost_mat[i,j] * penalty
+            penalty = penalty * penalty
         else:
             j -= 1
+            cost_mat[i, j] = cost_mat[i, j] * penalty
+            penalty = penalty * penalty
         a.push_back(i)
         b.push_back(j)
     return a, b, cost

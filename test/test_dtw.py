@@ -10,7 +10,7 @@ class DtwTest(TestCase):
     def test_dtw1d(self):
         a = np.array([0, 0, 1, 1, 2, 4, 2, 1, 2, 0], dtype=np.float64)
         b = np.array([1, 1, 1, 2, 2, 2, 2, 3, 2, 0], dtype=np.float64)
-        cost_mat, cost, al_a, al_b = dtw1d(a, b)
+        cost_mat, cost, al_a, al_b = dtw1d(a, b, 1)
         assert (al_a == np.array([0, 1, 2, 3, 4, 4, 4, 4, 5, 6, 7, 8, 9])).all(), al_a
         assert (al_b == np.array([0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 8, 8, 9])).all(), al_b
         cost_mat, cost, al_a, al_b = constrained_dtw1d(a, b, 2)
@@ -64,7 +64,7 @@ class DtwTest(TestCase):
                       [0.00794367, 0.72420966, 0.07036621, 0.5213072, 0.60074303],
                       [0.78067221, 0.48692555, 0.38134388, 0.16889658, 0.47186969]])
 
-        cost_mat, cost, al_a, al_b = dtw2d(a, b)
+        cost_mat, cost, al_a, al_b = dtw2d(a, b, 1)
         assert (al_a == np.array([0, 0, 1, 2, 3, 4, 5, 6, 6, 7, 8, 9, 10, 11, 11,
                                   11, 12, 12, 13, 14, 15, 16, 17, 18, 19, 19])).all(), al_a
         assert (al_b == np.array([0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13,
