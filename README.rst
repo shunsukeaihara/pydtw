@@ -35,3 +35,11 @@ Alignment for two 2-dimensional sequences
     a = np.random.rand(10, 4)
     b = np.random.rand(15, 4)
     cost_matrix, cost, alignment_a, alignment_b = dtw2d(a, b)
+
+development
+===========
+
+::
+
+    pip install -e .
+    pytest

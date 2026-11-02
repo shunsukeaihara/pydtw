@@ -1,16 +1,21 @@
 # -*- coding: utf-8 -*-
+# cython: language_level=3
+# cython: boundscheck=False
+# cython: wraparound=False
+# cython: cdivision=True
 # distutils: language = c++
-# distutils: sources = dtw.cpp
+import warnings
+
 import numpy as np
-cimport numpy as np
 cimport cython
 from libc.math cimport fabs, sqrt, INFINITY
 from libcpp.vector cimport vector
-import warnings
 
-ctypedef double (*metric_ptr)(double[::1] a, double[::1])
 
-cdef inline double d_min(double a, double b, double c):
+ctypedef double (*metric_ptr)(const double*, const double*, Py_ssize_t) noexcept nogil
+
+
+cdef inline double d_min(double a, double b, double c) noexcept nogil:
     if a < b and a < c:
         return a
     elif b < c:
@@ -18,7 +23,8 @@ cdef inline double d_min(double a, double b, double c):
     else:
         return c
 
-cdef inline int d_argmin(double  a, double b, double c):
+
+cdef inline int d_argmin(double a, double b, double c) noexcept nogil:
     if a <= b and a <= c:
         return 0
     elif b <= c:
@@ -27,142 +33,164 @@ cdef inline int d_argmin(double  a, double b, double c):
         return 2
 
 
-@cython.boundscheck(False)
-@cython.wraparound(False)
-cdef double euclidean_distance(double[::1] a, double[::1] b):
-    cdef int i
-    cdef double tmp, d
-    d = 0
-    for i in range(a.shape[0]):
+cdef double euclidean_distance(const double* a, const double* b, Py_ssize_t dim) noexcept nogil:
+    cdef Py_ssize_t i
+    cdef double tmp, d = 0.0
+    for i in range(dim):
         tmp = a[i] - b[i]
         d += tmp * tmp
     return sqrt(d)
 
 
-@cython.boundscheck(False)
-@cython.wraparound(False)
 def check_constraint(a_shape, b_shape, constraint=0, warn=True):
-    cdef int min_size = abs(a_shape - b_shape) + 1
+    """Return a Sakoe-Chiba band width that is large enough for the given lengths.
+
+    A band of width ``c`` only allows cells with ``abs(i - j) <= c``; the last
+    cell ``(a_shape - 1, b_shape - 1)`` is therefore reachable only if
+    ``c >= abs(a_shape - b_shape)``.
+    """
+    min_size = abs(a_shape - b_shape)
     if constraint < min_size:
         if warn:
-            warnings.warn("Constraint {} too small for sequences length {} and {}; using {}".format(constraint, a_shape, b_shape, min_size))
+            warnings.warn(
+                "Constraint {} too small for sequences length {} and {}; using {}".format(
+                    constraint, a_shape, b_shape, min_size))
         constraint = min_size
     return constraint
 
 
-@cython.boundscheck(False)
-@cython.wraparound(False)
-def dtw1d(np.ndarray[np.float64_t, ndim=1, mode="c"] a, np.ndarray[np.float64_t, ndim=1, mode="c"] b):
-    cdef int constraint = abs(a.shape[0] - b.shape[0]) + 1
-    cost_mat, cost, align_a, align_b = __dtw1d(a, b, constraint)
-    return cost_mat, cost, align_a, align_b
+cdef _as_sequence(x, int ndim, str name):
+    arr = np.ascontiguousarray(x, dtype=np.float64)
+    if arr.ndim != ndim:
+        raise ValueError("{} must be {}-dimensional, got shape {}".format(name, ndim, arr.shape))
+    if arr.shape[0] == 0:
+        raise ValueError("{} must not be empty".format(name))
+    return arr
 
 
-@cython.boundscheck(False)
-@cython.wraparound(False)
-def constrained_dtw1d(np.ndarray[np.float64_t, ndim=1, mode="c"] a, np.ndarray[np.float64_t, ndim=1, mode="c"] b,
-                       constraint=0):
-    constraint = check_constraint(a.shape[0],b.shape[0],constraint)
-    cost_mat, cost, align_a, align_b = __dtw1d(a, b, constraint)
-    return cost_mat, cost, align_a, align_b
+def dtw1d(a, b):
+    """Unconstrained DTW between two 1-d sequences.
+
+    Returns ``(cost_matrix, cost, alignment_a, alignment_b)``.
+    """
+    a = _as_sequence(a, 1, "a")
+    b = _as_sequence(b, 1, "b")
+    return __dtw1d(a, b, max(a.shape[0], b.shape[0]))
 
 
-@cython.boundscheck(False)
-@cython.wraparound(False)
-cdef __dtw1d(np.ndarray[np.float64_t, ndim=1, mode="c"] a, np.ndarray[np.float64_t, ndim=1, mode="c"] b,
-             int constraint):
-    cdef double[:, ::1] cost_mat = create_cost_mat_1d(a, b, constraint)
-    align_a, align_b, cost = traceback(cost_mat, a.shape[0], b.shape[0])
-    align_a.reverse()
-    align_b.reverse()
-    return cost_mat, cost, align_a, align_b
+def constrained_dtw1d(a, b, constraint=0):
+    """DTW between two 1-d sequences restricted to a Sakoe-Chiba band.
+
+    Only cells with ``abs(i - j) <= constraint`` are evaluated.
+    """
+    a = _as_sequence(a, 1, "a")
+    b = _as_sequence(b, 1, "b")
+    constraint = check_constraint(a.shape[0], b.shape[0], constraint)
+    return __dtw1d(a, b, constraint)
 
 
-@cython.boundscheck(False)
-@cython.wraparound(False)
-cdef double[:, ::1] create_cost_mat_1d(double[::1] a, double[::1]b, int constraint):
-    cdef double[:, ::1] cost_mat = np.empty((a.shape[0] + 1, b.shape[0] + 1), dtype=np.float64)
+cdef __dtw1d(double[::1] a, double[::1] b, Py_ssize_t constraint):
+    full = np.empty((a.shape[0] + 1, b.shape[0] + 1), dtype=np.float64)
+    cdef double[:, ::1] cost_mat = full
+    with nogil:
+        fill_cost_mat_1d(cost_mat, a, b, constraint)
+    align_a, align_b, cost = traceback(cost_mat)
+    return full[1:, 1:], cost, align_a, align_b
+
+
+cdef void fill_cost_mat_1d(double[:, ::1] cost_mat, double[::1] a, double[::1] b,
+                           Py_ssize_t constraint) noexcept nogil:
+    cdef Py_ssize_t i, j, j0, j1
+    cdef Py_ssize_t n = cost_mat.shape[0], m = cost_mat.shape[1]
     cost_mat[:] = INFINITY
-    cost_mat[0, 0] = 0
-    cdef int i, j
-    for i in range(1, cost_mat.shape[0]):
-        for j in range(max(1, i-constraint), min(cost_mat.shape[1], i+constraint+1)):
-            cost_mat[i, j] = fabs(a[i - 1] - b[j - 1]) +\
+    cost_mat[0, 0] = 0.0
+    for i in range(1, n):
+        j0 = max(1, i - constraint)
+        j1 = min(m, i + constraint + 1)
+        for j in range(j0, j1):
+            cost_mat[i, j] = fabs(a[i - 1] - b[j - 1]) + \
                 d_min(cost_mat[i - 1, j], cost_mat[i, j - 1], cost_mat[i - 1, j - 1])
-    return cost_mat[1:, 1:]
 
 
-@cython.boundscheck(False)
-@cython.wraparound(False)
-def dtw2d(np.ndarray[np.float64_t, ndim=2, mode="c"] a,
-          np.ndarray[np.float64_t, ndim=2, mode="c"] b, metric="euclidean"):
-    cdef int constraint = abs(a.shape[0] - b.shape[0]) + 1
-    cost_mat, cost, align_a, align_b = __dtw2d(a, b, constraint, metric)
-    return cost_mat, cost, align_a, align_b
+def dtw2d(a, b, metric="euclidean"):
+    """Unconstrained DTW between two multivariate sequences of shape (len, dim).
+
+    Returns ``(cost_matrix, cost, alignment_a, alignment_b)``.
+    """
+    a = _as_sequence(a, 2, "a")
+    b = _as_sequence(b, 2, "b")
+    return __dtw2d(a, b, max(a.shape[0], b.shape[0]), metric)
 
 
-@cython.boundscheck(False)
-@cython.wraparound(False)
-def constrained_dtw2d(np.ndarray[np.float64_t, ndim=2, mode="c"] a,
-                       np.ndarray[np.float64_t, ndim=2, mode="c"] b, constraint=0, metric="euclidean"):
-    constraint = check_constraint(a.shape[0],b.shape[0],constraint)
-    cost_mat, cost, align_a, align_b = __dtw2d(a, b, constraint, metric)
-    return cost_mat, cost, align_a, align_b
+def constrained_dtw2d(a, b, constraint=0, metric="euclidean"):
+    """DTW between two multivariate sequences restricted to a Sakoe-Chiba band."""
+    a = _as_sequence(a, 2, "a")
+    b = _as_sequence(b, 2, "b")
+    constraint = check_constraint(a.shape[0], b.shape[0], constraint)
+    return __dtw2d(a, b, constraint, metric)
 
 
-@cython.boundscheck(False)
-@cython.wraparound(False)
-cdef __dtw2d(np.ndarray[np.float64_t, ndim=2, mode="c"] a,
-             np.ndarray[np.float64_t, ndim=2, mode="c"] b, int constraint, metric):
-    assert a.shape[1] == b.shape[1], 'Matrices must have same dimention. a={}, b={}'.format(a.shape[1], b.shape[1])
+cdef __dtw2d(double[:, ::1] a, double[:, ::1] b, Py_ssize_t constraint, metric):
+    if a.shape[1] != b.shape[1]:
+        raise ValueError('Matrices must have same dimension. a={}, b={}'.format(a.shape[1], b.shape[1]))
     cdef metric_ptr dist_func
     if metric == 'euclidean':
         dist_func = &euclidean_distance
     else:
-        raise ValueError("unrecognized metric")
-    cdef double[:, ::1] cost_mat = create_cost_mat_2d(a, b, constraint, dist_func)
-    align_a, align_b, cost = traceback(cost_mat, a.shape[0], b.shape[0])
-    align_a.reverse()
-    align_b.reverse()
-    return cost_mat, cost, align_a, align_b
+        raise ValueError("unrecognized metric: {!r}".format(metric))
+    full = np.empty((a.shape[0] + 1, b.shape[0] + 1), dtype=np.float64)
+    cdef double[:, ::1] cost_mat = full
+    with nogil:
+        fill_cost_mat_2d(cost_mat, a, b, constraint, dist_func)
+    align_a, align_b, cost = traceback(cost_mat)
+    return full[1:, 1:], cost, align_a, align_b
 
 
-@cython.boundscheck(False)
-@cython.wraparound(False)
-cdef double[:, ::1] create_cost_mat_2d(double[:, ::1] a, double[:, ::1] b, int constraint, metric_ptr dist_func):
-    cdef double[:, ::1] cost_mat = np.empty((a.shape[0] + 1, b.shape[0] + 1), dtype=np.float64)
+cdef void fill_cost_mat_2d(double[:, ::1] cost_mat, double[:, ::1] a, double[:, ::1] b,
+                           Py_ssize_t constraint, metric_ptr dist_func) noexcept nogil:
+    cdef Py_ssize_t i, j, j0, j1
+    cdef Py_ssize_t n = cost_mat.shape[0], m = cost_mat.shape[1], dim = a.shape[1]
     cost_mat[:] = INFINITY
-    cost_mat[0, 0] = 0
-    cdef int i, j
-    for i in range(1, cost_mat.shape[0]):
-        for j in range(max(1, i-constraint), min(cost_mat.shape[1], i+constraint+1)):
-            cost_mat[i, j] = dist_func(a[i - 1], b[j - 1]) +\
+    cost_mat[0, 0] = 0.0
+    for i in range(1, n):
+        j0 = max(1, i - constraint)
+        j1 = min(m, i + constraint + 1)
+        for j in range(j0, j1):
+            cost_mat[i, j] = dist_func(&a[i - 1, 0], &b[j - 1, 0], dim) + \
                 d_min(cost_mat[i - 1, j], cost_mat[i, j - 1], cost_mat[i - 1, j - 1])
-    return cost_mat[1:, 1:]
 
 
-@cython.boundscheck(False)
-@cython.wraparound(False)
-cdef traceback(double[:, ::1] cost_mat, int ilen, int jlen):
-    cdef int i, j
-    i = ilen - 1
-    j = jlen - 1
+cdef traceback(double[:, ::1] cost_mat):
+    """Walk back from the last cell of the padded (n+1, m+1) matrix.
+
+    Returns 0-based alignment index lists in forward order and the total cost.
+    """
+    cdef Py_ssize_t i = cost_mat.shape[0] - 1
+    cdef Py_ssize_t j = cost_mat.shape[1] - 1
     cdef double cost = cost_mat[i, j]
-    cdef vector[int] a
-    cdef vector[int] b
-    a.push_back(i)
-    b.push_back(j)
+    cdef vector[Py_ssize_t] a
+    cdef vector[Py_ssize_t] b
     cdef int match
-    while (i > 0 or j > 0):
-        match = d_argmin(cost_mat[i - 1, j - 1], cost_mat[i - 1, j], cost_mat[i, j - 1])
-        if match == 0:
-            i -= 1
+    a.push_back(i - 1)
+    b.push_back(j - 1)
+    while i > 1 or j > 1:
+        if i == 1:
             j -= 1
-        elif match == 1:
+        elif j == 1:
             i -= 1
         else:
-            j -= 1
-        a.push_back(i)
-        b.push_back(j)
-    return a, b, cost
-
+            match = d_argmin(cost_mat[i - 1, j - 1], cost_mat[i - 1, j], cost_mat[i, j - 1])
+            if match == 0:
+                i -= 1
+                j -= 1
+            elif match == 1:
+                i -= 1
+            else:
+                j -= 1
+        a.push_back(i - 1)
+        b.push_back(j - 1)
+    align_a = list(a)
+    align_b = list(b)
+    align_a.reverse()
+    align_b.reverse()
+    return align_a, align_b, cost
