@@ -165,10 +165,3 @@ development
 
     pip install -e .
     pytest
-
-release
-=======
-
-Push a tag ``vX.Y.Z`` matching ``version`` in ``pyproject.toml``. The
-``publish`` workflow builds the sdist and wheels and uploads them to PyPI
-through trusted publishing (environment ``pypi``).

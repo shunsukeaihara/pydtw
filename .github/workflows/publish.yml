@@ -1,7 +1,9 @@
 name: publish
 
-# Build sdist and wheels when a vX.Y.Z tag is pushed and publish them to
-# PyPI with trusted publishing (environment "pypi", no API token needed).
+# Release procedure: bump "version" in pyproject.toml, then push a tag
+# vX.Y.Z with the same number. This workflow builds the sdist and wheels and
+# publishes them to PyPI with trusted publishing (PyPI publisher settings:
+# repository shunsukeaihara/pydtw, workflow publish.yml, environment pypi).
 
 on:
   push:
