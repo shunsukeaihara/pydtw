@@ -47,12 +47,16 @@ cdef double euclidean_distance(const double* a, const double* b, Py_ssize_t dim)
     return sqrt(d)
 
 
-def check_constraint(a_shape, b_shape, constraint=0, warn=True):
-    """Return a Sakoe-Chiba band width that is large enough for the given lengths.
+# ---------------------------------------------------------------------------
+# Argument handling
+# ---------------------------------------------------------------------------
 
-    A band of width ``c`` only allows cells with ``abs(i - j) <= c``; the last
-    cell ``(a_shape - 1, b_shape - 1)`` is therefore reachable only if
-    ``c >= abs(a_shape - b_shape)``.
+def check_constraint(a_shape, b_shape, constraint=0, warn=True):
+    """Return a Sakoe-Chiba window that is large enough for the given lengths.
+
+    A window ``w`` only allows cells with ``abs(i - j) <= w``; the last cell
+    ``(a_shape - 1, b_shape - 1)`` is therefore reachable only if
+    ``w >= abs(a_shape - b_shape)``.
     """
     min_size = abs(a_shape - b_shape)
     if constraint < min_size:
@@ -64,6 +68,15 @@ def check_constraint(a_shape, b_shape, constraint=0, warn=True):
     return constraint
 
 
+cdef Py_ssize_t _resolve_window(Py_ssize_t n, Py_ssize_t m, window) except -1:
+    if window is None:
+        return max(n, m)
+    window = int(window)
+    if window < 0:
+        raise ValueError("window must be non-negative, got {}".format(window))
+    return check_constraint(n, m, window)
+
+
 cdef _as_sequence(x, int ndim, str name):
     arr = np.ascontiguousarray(x, dtype=np.float64)
     if arr.ndim != ndim:
@@ -73,106 +86,87 @@ cdef _as_sequence(x, int ndim, str name):
     return arr
 
 
-def dtw1d(a, b):
-    """Unconstrained DTW between two 1-d sequences.
-
-    Returns ``(cost_matrix, cost, alignment_a, alignment_b)``.
-    """
-    a = _as_sequence(a, 1, "a")
-    b = _as_sequence(b, 1, "b")
-    return __dtw1d(a, b, max(a.shape[0], b.shape[0]))
-
-
-def constrained_dtw1d(a, b, constraint=0):
-    """DTW between two 1-d sequences restricted to a Sakoe-Chiba band.
-
-    Only cells with ``abs(i - j) <= constraint`` are evaluated.
-    """
-    a = _as_sequence(a, 1, "a")
-    b = _as_sequence(b, 1, "b")
-    constraint = check_constraint(a.shape[0], b.shape[0], constraint)
-    return __dtw1d(a, b, constraint)
-
-
-cdef __dtw1d(double[::1] a, double[::1] b, Py_ssize_t constraint):
-    full = np.empty((a.shape[0] + 1, b.shape[0] + 1), dtype=np.float64)
-    cdef double[:, ::1] cost_mat = full
-    with nogil:
-        fill_cost_mat_1d(cost_mat, a, b, constraint)
-    align_a, align_b, cost = traceback(cost_mat)
-    return full[1:, 1:], cost, align_a, align_b
-
-
-cdef void fill_cost_mat_1d(double[:, ::1] cost_mat, double[::1] a, double[::1] b,
-                           Py_ssize_t constraint) noexcept nogil:
-    cdef Py_ssize_t i, j, j0, j1
-    cdef Py_ssize_t n = cost_mat.shape[0], m = cost_mat.shape[1]
-    cost_mat[:] = INFINITY
-    cost_mat[0, 0] = 0.0
-    for i in range(1, n):
-        j0 = max(1, i - constraint)
-        j1 = min(m, i + constraint + 1)
-        for j in range(j0, j1):
-            cost_mat[i, j] = fabs(a[i - 1] - b[j - 1]) + \
-                d_min(cost_mat[i - 1, j], cost_mat[i, j - 1], cost_mat[i - 1, j - 1])
-
-
-def dtw2d(a, b, metric="euclidean"):
-    """Unconstrained DTW between two multivariate sequences of shape (len, dim).
-
-    Returns ``(cost_matrix, cost, alignment_a, alignment_b)``.
-    """
+cdef _as_pair_2d(a, b):
     a = _as_sequence(a, 2, "a")
     b = _as_sequence(b, 2, "b")
-    return __dtw2d(a, b, max(a.shape[0], b.shape[0]), metric)
-
-
-def constrained_dtw2d(a, b, constraint=0, metric="euclidean"):
-    """DTW between two multivariate sequences restricted to a Sakoe-Chiba band."""
-    a = _as_sequence(a, 2, "a")
-    b = _as_sequence(b, 2, "b")
-    constraint = check_constraint(a.shape[0], b.shape[0], constraint)
-    return __dtw2d(a, b, constraint, metric)
-
-
-cdef __dtw2d(double[:, ::1] a, double[:, ::1] b, Py_ssize_t constraint, metric):
     if a.shape[1] != b.shape[1]:
         raise ValueError('Matrices must have same dimension. a={}, b={}'.format(a.shape[1], b.shape[1]))
-    cdef metric_ptr dist_func
+    return a, b
+
+
+cdef metric_ptr _metric(metric) except NULL:
     if metric == 'euclidean':
-        dist_func = &euclidean_distance
-    else:
-        raise ValueError("unrecognized metric: {!r}".format(metric))
-    full = np.empty((a.shape[0] + 1, b.shape[0] + 1), dtype=np.float64)
-    cdef double[:, ::1] cost_mat = full
-    with nogil:
-        fill_cost_mat_2d(cost_mat, a, b, constraint, dist_func)
-    align_a, align_b, cost = traceback(cost_mat)
-    return full[1:, 1:], cost, align_a, align_b
+        return &euclidean_distance
+    raise ValueError("unrecognized metric: {!r}".format(metric))
 
 
-cdef void fill_cost_mat_2d(double[:, ::1] cost_mat, double[:, ::1] a, double[:, ::1] b,
-                           Py_ssize_t constraint, metric_ptr dist_func) noexcept nogil:
-    cdef Py_ssize_t i, j, j0, j1
-    cdef Py_ssize_t n = cost_mat.shape[0], m = cost_mat.shape[1], dim = a.shape[1]
+cdef int _method_id(method) except -1:
+    if method == 'eap':
+        return 0
+    if method == 'pruned':
+        return 1
+    raise ValueError("method must be 'eap' or 'pruned', got {!r}".format(method))
+
+
+cdef double _bound(ub) except? -1.0:
+    cdef double bound = INFINITY if ub is None else float(ub)
+    if bound != bound:
+        raise ValueError("ub must not be NaN")
+    return bound
+
+
+# ---------------------------------------------------------------------------
+# Full cost matrix + traceback (alignment API)
+# ---------------------------------------------------------------------------
+
+cdef double fill_cost_mat(double[:, ::1] cost_mat, const double* a, const double* b,
+                          Py_ssize_t dim, metric_ptr dist_func, Py_ssize_t w,
+                          double ub) noexcept nogil:
+    """Fill the padded (n+1, m+1) cost matrix inside a Sakoe-Chiba band.
+
+    Cells whose cost exceeds ``ub`` are pruned the PrunedDTW way (see
+    ``pruned_dtw_core``); pruned and never-visited cells stay INFINITY, so
+    the traceback is unaffected. Returns the final cost, or INFINITY when it
+    exceeds ``ub``.
+    """
+    cdef Py_ssize_t i, j, beg, end, sc = 1, ec = 1, ec_next = 1
+    cdef Py_ssize_t n = cost_mat.shape[0], m = cost_mat.shape[1]
+    cdef bint smaller_found
+    cdef double v
     cost_mat[:] = INFINITY
     cost_mat[0, 0] = 0.0
     for i in range(1, n):
-        j0 = max(1, i - constraint)
-        j1 = min(m, i + constraint + 1)
-        for j in range(j0, j1):
-            cost_mat[i, j] = dist_func(&a[i - 1, 0], &b[j - 1, 0], dim) + \
+        beg = max(sc, i - w)
+        end = min(m - 1, i + w)
+        if beg > end:
+            return INFINITY
+        smaller_found = False
+        for j in range(beg, end + 1):
+            v = dist_func(a + (i - 1) * dim, b + (j - 1) * dim, dim) + \
                 d_min(cost_mat[i - 1, j], cost_mat[i, j - 1], cost_mat[i - 1, j - 1])
+            cost_mat[i, j] = v
+            if v > ub:
+                if not smaller_found:
+                    sc = j + 1
+                if j >= ec:
+                    break
+            else:
+                smaller_found = True
+                ec_next = j + 1
+        if not smaller_found:
+            return INFINITY
+        ec = ec_next
+    v = cost_mat[n - 1, m - 1]
+    return v if v <= ub else INFINITY
 
 
 cdef traceback(double[:, ::1] cost_mat):
     """Walk back from the last cell of the padded (n+1, m+1) matrix.
 
-    Returns 0-based alignment index lists in forward order and the total cost.
+    Returns 0-based alignment index lists in forward order.
     """
     cdef Py_ssize_t i = cost_mat.shape[0] - 1
     cdef Py_ssize_t j = cost_mat.shape[1] - 1
-    cdef double cost = cost_mat[i, j]
     cdef vector[Py_ssize_t] a
     cdef vector[Py_ssize_t] b
     cdef int match
@@ -198,11 +192,61 @@ cdef traceback(double[:, ::1] cost_mat):
     align_b = list(b)
     align_a.reverse()
     align_b.reverse()
-    return align_a, align_b, cost
+    return align_a, align_b
+
+
+cdef _dtw_path(double[:, ::1] a, double[:, ::1] b, Py_ssize_t w, double ub, metric_ptr dist_func):
+    full = np.empty((a.shape[0] + 1, b.shape[0] + 1), dtype=np.float64)
+    cdef double[:, ::1] cost_mat = full
+    cdef double cost
+    with nogil:
+        cost = fill_cost_mat(cost_mat, &a[0, 0], &b[0, 0], a.shape[1], dist_func, w, ub)
+    if cost == INFINITY:
+        return full[1:, 1:], cost, [], []
+    align_a, align_b = traceback(cost_mat)
+    return full[1:, 1:], cost, align_a, align_b
+
+
+def dtw1d(a, b, window=None, ub=None):
+    """DTW alignment of two 1-d sequences.
+
+    ``window``: Sakoe-Chiba window; ``None`` searches the full matrix, an
+    integer ``w`` only cells with ``abs(i - j) <= w`` (widened with a
+    warning when smaller than ``abs(len(a) - len(b))``).
+    ``ub``: upper bound on the cost; cells above it are pruned. When the
+    cost exceeds ``ub`` the result is ``(cost_matrix, inf, [], [])``.
+
+    Returns ``(cost_matrix, cost, alignment_a, alignment_b)``; cells outside
+    the window or pruned are ``inf`` in ``cost_matrix``.
+    """
+    a = _as_sequence(a, 1, "a")
+    b = _as_sequence(b, 1, "b")
+    w = _resolve_window(a.shape[0], b.shape[0], window)
+    return _dtw_path(a.reshape(-1, 1), b.reshape(-1, 1), w, _bound(ub), &abs_distance)
+
+
+def dtw2d(a, b, window=None, metric="euclidean", ub=None):
+    """DTW alignment of two multivariate sequences of shape (len, dim).
+
+    See :func:`dtw1d` for ``window`` and ``ub``.
+    """
+    a, b = _as_pair_2d(a, b)
+    w = _resolve_window(a.shape[0], b.shape[0], window)
+    return _dtw_path(a, b, w, _bound(ub), _metric(metric))
+
+
+def constrained_dtw1d(a, b, constraint=0):
+    """Deprecated alias for ``dtw1d(a, b, window=constraint)``."""
+    return dtw1d(a, b, window=constraint)
+
+
+def constrained_dtw2d(a, b, constraint=0, metric="euclidean"):
+    """Deprecated alias for ``dtw2d(a, b, window=constraint, metric=metric)``."""
+    return dtw2d(a, b, window=constraint, metric=metric)
 
 
 # ---------------------------------------------------------------------------
-# Distance-only API: two-row buffer (O(min(n, m)) memory) + PrunedDTW
+# Distance-only API: two-row buffer (O(len(b)) memory) + pruning
 # ---------------------------------------------------------------------------
 
 cdef double path_upper_bound(const double* a, Py_ssize_t n, const double* b, Py_ssize_t m,
@@ -385,25 +429,15 @@ cdef double eap_pruned_dtw_core(const double* a, Py_ssize_t n, const double* b, 
     return INFINITY
 
 
-cdef int _method_id(method) except -1:
-    if method == 'eap':
-        return 0
-    if method == 'pruned':
-        return 1
-    raise ValueError("method must be 'eap' or 'pruned', got {!r}".format(method))
-
-
 cdef double _dtw_dist(double[:, ::1] a, double[:, ::1] b, Py_ssize_t w, ub, metric_ptr dist_func,
                       method):
     cdef Py_ssize_t n = a.shape[0], m = b.shape[0], dim = a.shape[1]
     # One leading INFINITY slot so that the cores may read index -1.
     cdef vector[double] buf0 = vector[double](m + 2, INFINITY)
     cdef vector[double] buf1 = vector[double](m + 2, INFINITY)
-    cdef double bound = INFINITY, result
+    cdef double bound = _bound(ub), result
     cdef bint auto_ub = ub is None
     cdef int method_id = _method_id(method)
-    if not auto_ub:
-        bound = ub
     with nogil:
         if auto_ub:
             bound = path_upper_bound(&a[0, 0], n, &b[0, 0], m, dim, dist_func)
@@ -416,19 +450,14 @@ cdef double _dtw_dist(double[:, ::1] a, double[:, ::1] b, Py_ssize_t w, ub, metr
     return result
 
 
-cdef metric_ptr _metric(metric) except NULL:
-    if metric == 'euclidean':
-        return &euclidean_distance
-    raise ValueError("unrecognized metric: {!r}".format(metric))
+def dtw1d_dist(a, b, window=None, ub=None, method="eap"):
+    """DTW cost of two 1-d sequences without computing the alignment.
 
-
-def dtw1d_dist(a, b, ub=None, method="eap"):
-    """DTW cost of two 1-d sequences without computing the path.
-
-    Uses O(len(b)) memory. ``ub`` is an upper bound on the cost: cells that
-    exceed it are pruned, and ``inf`` is returned when the true cost exceeds
-    it. ``None`` (default) derives a bound from a simple warping path, which
-    keeps the result exact; ``np.inf`` disables pruning.
+    Uses O(len(b)) memory. ``window`` as in :func:`dtw1d`. ``ub`` is an
+    upper bound on the cost: cells above it are pruned and ``inf`` is
+    returned when the true cost exceeds it. ``None`` (default) derives a
+    bound from a simple warping path, which keeps the result exact;
+    ``np.inf`` disables pruning.
 
     ``method`` selects the pruning scheme: ``"eap"`` (EAPrunedDTW, Herrmann &
     Webb 2021, default) or ``"pruned"`` (PrunedDTW, Silva & Batista 2016).
@@ -436,35 +465,44 @@ def dtw1d_dist(a, b, ub=None, method="eap"):
     """
     a = _as_sequence(a, 1, "a")
     b = _as_sequence(b, 1, "b")
-    return _dtw_dist(a.reshape(-1, 1), b.reshape(-1, 1), max(a.shape[0], b.shape[0]), ub,
-                     &abs_distance, method)
+    w = _resolve_window(a.shape[0], b.shape[0], window)
+    return _dtw_dist(a.reshape(-1, 1), b.reshape(-1, 1), w, ub, &abs_distance, method)
 
 
-def constrained_dtw1d_dist(a, b, constraint=0, ub=None, method="eap"):
-    """Like :func:`dtw1d_dist`, restricted to a Sakoe-Chiba band."""
+def dtw2d_dist(a, b, window=None, metric="euclidean", ub=None, method="eap"):
+    """DTW cost of two multivariate sequences of shape (len, dim) without the alignment.
+
+    See :func:`dtw1d_dist` for ``window``, ``ub`` and ``method``.
+    """
+    a, b = _as_pair_2d(a, b)
+    w = _resolve_window(a.shape[0], b.shape[0], window)
+    return _dtw_dist(a, b, w, ub, _metric(metric), method)
+
+
+# ---------------------------------------------------------------------------
+# Pruned alignment: exact cost first (cheap), then the alignment with that
+# cost as the bound so only cells on paths at least as good are expanded.
+# ---------------------------------------------------------------------------
+
+def pruned_dtw1d(a, b, window=None, method="eap"):
+    """Same result as :func:`dtw1d`, computed with pruning.
+
+    Runs :func:`dtw1d_dist` first and then :func:`dtw1d` with ``ub`` set to
+    that cost, so the full matrix only expands cells that can lie on an
+    optimal path.
+    """
     a = _as_sequence(a, 1, "a")
     b = _as_sequence(b, 1, "b")
-    constraint = check_constraint(a.shape[0], b.shape[0], constraint)
-    return _dtw_dist(a.reshape(-1, 1), b.reshape(-1, 1), constraint, ub, &abs_distance, method)
+    w = _resolve_window(a.shape[0], b.shape[0], window)
+    a2, b2 = a.reshape(-1, 1), b.reshape(-1, 1)
+    cost = _dtw_dist(a2, b2, w, None, &abs_distance, method)
+    return _dtw_path(a2, b2, w, cost, &abs_distance)
 
 
-def dtw2d_dist(a, b, metric="euclidean", ub=None, method="eap"):
-    """DTW cost of two multivariate sequences of shape (len, dim) without the path.
-
-    See :func:`dtw1d_dist` for ``ub`` and ``method``.
-    """
-    a = _as_sequence(a, 2, "a")
-    b = _as_sequence(b, 2, "b")
-    if a.shape[1] != b.shape[1]:
-        raise ValueError('Matrices must have same dimension. a={}, b={}'.format(a.shape[1], b.shape[1]))
-    return _dtw_dist(a, b, max(a.shape[0], b.shape[0]), ub, _metric(metric), method)
-
-
-def constrained_dtw2d_dist(a, b, constraint=0, metric="euclidean", ub=None, method="eap"):
-    """Like :func:`dtw2d_dist`, restricted to a Sakoe-Chiba band."""
-    a = _as_sequence(a, 2, "a")
-    b = _as_sequence(b, 2, "b")
-    if a.shape[1] != b.shape[1]:
-        raise ValueError('Matrices must have same dimension. a={}, b={}'.format(a.shape[1], b.shape[1]))
-    constraint = check_constraint(a.shape[0], b.shape[0], constraint)
-    return _dtw_dist(a, b, constraint, ub, _metric(metric), method)
+def pruned_dtw2d(a, b, window=None, metric="euclidean", method="eap"):
+    """Same result as :func:`dtw2d`, computed with pruning. See :func:`pruned_dtw1d`."""
+    a, b = _as_pair_2d(a, b)
+    w = _resolve_window(a.shape[0], b.shape[0], window)
+    cdef metric_ptr dist_func = _metric(metric)
+    cost = _dtw_dist(a, b, w, None, dist_func, method)
+    return _dtw_path(a, b, w, cost, dist_func)

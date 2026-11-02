@@ -4,8 +4,8 @@ from unittest import TestCase
 
 import numpy as np
 
-from pydtw import (dtw1d, dtw2d, constrained_dtw1d, constrained_dtw2d,
-                   dtw1d_dist, dtw2d_dist, constrained_dtw1d_dist, constrained_dtw2d_dist)
+from pydtw import (dtw1d, dtw2d, dtw1d_dist, dtw2d_dist, pruned_dtw1d, pruned_dtw2d,
+                   constrained_dtw1d, constrained_dtw2d)
 
 
 def reference_dtw(a, b, band=None):
@@ -94,71 +94,84 @@ class DtwTest(TestCase):
     def test_dtw1d(self):
         a = np.array([0, 0, 1, 1, 2, 4, 2, 1, 2, 0], dtype=np.float64)
         b = np.array([1, 1, 1, 2, 2, 2, 2, 3, 2, 0], dtype=np.float64)
-        cost_mat, cost, al_a, al_b = dtw1d(a, b)
-        self.assertEqual(cost, 4.0)
-        assert (al_a == np.array([0, 1, 2, 3, 4, 4, 4, 4, 5, 6, 7, 8, 9])).all(), al_a
-        assert (al_b == np.array([0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 8, 8, 9])).all(), al_b
+        expected_a = [0, 1, 2, 3, 4, 4, 4, 4, 5, 6, 7, 8, 9]
+        expected_b = [0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 8, 8, 9]
+        for f in (dtw1d, pruned_dtw1d):
+            cost_mat, cost, al_a, al_b = f(a, b)
+            self.assertEqual(cost, 4.0)
+            self.assertEqual(al_a, expected_a)
+            self.assertEqual(al_b, expected_b)
+            cost_mat, cost, al_a, al_b = f(a, b, window=2)
+            self.assertEqual(cost, 4.0)
+            self.assertEqual(al_a, expected_a)
+            self.assertEqual(al_b, expected_b)
         cost_mat, cost, al_a, al_b = constrained_dtw1d(a, b, 2)
         self.assertEqual(cost, 4.0)
-        assert (al_a == np.array([0, 1, 2, 3, 4, 4, 4, 4, 5, 6, 7, 8, 9])).all(), al_a
-        assert (al_b == np.array([0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 8, 8, 9])).all(), al_b
+        self.assertEqual(al_a, expected_a)
 
     def test_dtw2d(self):
         expected_a = [0, 1, 2, 3, 4, 5, 6, 6, 7, 8, 9, 10, 11, 11, 11,
                       12, 12, 13, 14, 15, 16, 17, 18, 19, 19]
         expected_b = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14,
                       15, 16, 17, 18, 19, 20, 21, 22, 23, 24]
-        cost_mat, cost, al_a, al_b = dtw2d(A2D, B2D)
-        self.assertEqual(al_a, expected_a)
-        self.assertEqual(al_b, expected_b)
+        for f in (dtw2d, pruned_dtw2d):
+            cost_mat, cost, al_a, al_b = f(A2D, B2D)
+            self.assertEqual(al_a, expected_a)
+            self.assertEqual(al_b, expected_b)
+            cost_mat, cost, al_a, al_b = f(A2D, B2D, window=5)
+            self.assertEqual(al_a, expected_a)
+            self.assertEqual(al_b, expected_b)
         cost_mat, cost, al_a, al_b = constrained_dtw2d(A2D, B2D, 5)
         self.assertEqual(al_a, expected_a)
-        self.assertEqual(al_b, expected_b)
 
     def test_matches_reference_1d(self):
         rng = np.random.default_rng(0)
         for n, m in [(1, 1), (1, 7), (7, 1), (10, 10), (10, 25), (40, 9), (64, 64)]:
             a, b = rng.random(n), rng.random(m)
-            cm, cost, al_a, al_b = dtw1d(a, b)
             ref_cm, ref_cost, ref_a, ref_b = reference_dtw(a, b)
-            self.assertAlmostEqual(cost, ref_cost, msg=(n, m))
-            np.testing.assert_allclose(cm, ref_cm)
-            self.assertEqual(al_a, ref_a, (n, m))
-            self.assertEqual(al_b, ref_b, (n, m))
+            for f in (dtw1d, pruned_dtw1d):
+                cm, cost, al_a, al_b = f(a, b)
+                self.assertAlmostEqual(cost, ref_cost, msg=(n, m, f.__name__))
+                self.assertEqual(al_a, ref_a, (n, m, f.__name__))
+                self.assertEqual(al_b, ref_b, (n, m, f.__name__))
+            np.testing.assert_allclose(dtw1d(a, b)[0], ref_cm)
 
     def test_matches_reference_2d(self):
         rng = np.random.default_rng(1)
         for n, m, d in [(1, 1, 3), (1, 6, 2), (6, 1, 2), (12, 12, 4), (10, 30, 1), (33, 8, 5)]:
             a, b = rng.random((n, d)), rng.random((m, d))
-            cm, cost, al_a, al_b = dtw2d(a, b)
             ref_cm, ref_cost, ref_a, ref_b = reference_dtw(a, b)
-            self.assertAlmostEqual(cost, ref_cost, msg=(n, m, d))
-            np.testing.assert_allclose(cm, ref_cm)
-            self.assertEqual(al_a, ref_a, (n, m, d))
-            self.assertEqual(al_b, ref_b, (n, m, d))
+            for f in (dtw2d, pruned_dtw2d):
+                cm, cost, al_a, al_b = f(a, b)
+                self.assertAlmostEqual(cost, ref_cost, msg=(n, m, d, f.__name__))
+                self.assertEqual(al_a, ref_a, (n, m, d, f.__name__))
+                self.assertEqual(al_b, ref_b, (n, m, d, f.__name__))
+            np.testing.assert_allclose(dtw2d(a, b)[0], ref_cm)
 
-    def test_constrained_matches_reference(self):
+    def test_window_matches_reference(self):
         rng = np.random.default_rng(2)
         for n, m, band in [(20, 20, 0), (20, 20, 3), (20, 30, 10), (30, 20, 12), (15, 15, 100)]:
             a, b = rng.random(n), rng.random(m)
-            cm, cost, al_a, al_b = constrained_dtw1d(a, b, band)
             ref_cm, ref_cost, ref_a, ref_b = reference_dtw(a, b, band)
-            self.assertAlmostEqual(cost, ref_cost, msg=(n, m, band))
-            np.testing.assert_allclose(cm, ref_cm)
-            self.assertEqual(al_a, ref_a, (n, m, band))
-            self.assertEqual(al_b, ref_b, (n, m, band))
+            for f in (dtw1d, pruned_dtw1d):
+                cm, cost, al_a, al_b = f(a, b, window=band)
+                self.assertAlmostEqual(cost, ref_cost, msg=(n, m, band, f.__name__))
+                self.assertEqual(al_a, ref_a, (n, m, band, f.__name__))
+                self.assertEqual(al_b, ref_b, (n, m, band, f.__name__))
+            np.testing.assert_allclose(dtw1d(a, b, window=band)[0], ref_cm)
             a2, b2 = rng.random((n, 3)), rng.random((m, 3))
-            cm, cost, al_a, al_b = constrained_dtw2d(a2, b2, band)
             ref_cm, ref_cost, ref_a, ref_b = reference_dtw(a2, b2, band)
-            self.assertAlmostEqual(cost, ref_cost, msg=(n, m, band))
-            self.assertEqual(al_a, ref_a, (n, m, band))
-            self.assertEqual(al_b, ref_b, (n, m, band))
+            for f in (dtw2d, pruned_dtw2d):
+                cm, cost, al_a, al_b = f(a2, b2, window=band)
+                self.assertAlmostEqual(cost, ref_cost, msg=(n, m, band, f.__name__))
+                self.assertEqual(al_a, ref_a, (n, m, band, f.__name__))
+                self.assertEqual(al_b, ref_b, (n, m, band, f.__name__))
 
-    def test_constraint_too_small_is_widened(self):
+    def test_window_too_small_is_widened(self):
         a, b = np.arange(5.0), np.arange(9.0)
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
-            cm, cost, al_a, al_b = constrained_dtw1d(a, b, 1)
+            cm, cost, al_a, al_b = dtw1d(a, b, window=1)
         self.assertEqual(len(w), 1)
         self.assertTrue(np.isfinite(cost))
         self.assertEqual(al_a[-1], 4)
@@ -166,8 +179,33 @@ class DtwTest(TestCase):
         # abs(n - m) is enough for the end cell to be reachable: no warning.
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
-            constrained_dtw1d(a, b, 4)
+            dtw1d(a, b, window=4)
         self.assertEqual(len(w), 0)
+        with self.assertRaises(ValueError):
+            dtw1d(a, b, window=-1)
+
+    def test_upper_bound_on_alignment(self):
+        a = np.array([0, 0, 1, 1, 2, 4, 2, 1, 2, 0], dtype=np.float64)
+        b = np.array([1, 1, 1, 2, 2, 2, 2, 3, 2, 0], dtype=np.float64)
+        cm, cost, al_a, al_b = dtw1d(a, b, ub=4.0)
+        self.assertEqual(cost, 4.0)
+        self.assertEqual(al_a, dtw1d(a, b)[2])
+        cm, cost, al_a, al_b = dtw1d(a, b, ub=3.9)
+        self.assertEqual(cost, np.inf)
+        self.assertEqual((al_a, al_b), ([], []))
+        self.assertEqual(cm.shape, (10, 10))
+        cm, cost, al_a, al_b = dtw2d(A2D, B2D, ub=1.0)
+        self.assertEqual(cost, np.inf)
+        self.assertEqual((al_a, al_b), ([], []))
+        # ub equal to the exact cost never prunes the optimum.
+        rng = np.random.default_rng(4)
+        for _ in range(100):
+            n, m = rng.integers(1, 50, size=2)
+            x, y = np.cumsum(rng.normal(size=n)), np.cumsum(rng.normal(size=m))
+            ref = dtw1d(x, y)
+            got = dtw1d(x, y, ub=ref[1])
+            self.assertEqual(got[1], ref[1], (n, m))
+            self.assertEqual(got[2:], ref[2:], (n, m))
 
     def test_returns_ndarray_cost_matrix(self):
         cm, cost, al_a, al_b = dtw1d(np.arange(4.0), np.arange(6.0))
@@ -196,6 +234,8 @@ class DtwTest(TestCase):
             dtw2d(np.zeros((0, 2)), np.zeros((3, 2)))
         with self.assertRaises(ValueError):
             dtw2d(np.zeros((3, 2)), np.zeros((3, 2)), metric="cosine")
+        with self.assertRaises(ValueError):
+            dtw1d(np.zeros(3), np.zeros(3), ub=np.nan)
 
 
 class DtwDistTest(TestCase):
@@ -214,18 +254,18 @@ class DtwDistTest(TestCase):
                 self.assertAlmostEqual(dtw2d_dist(a2, b2, method=method), expected2, msg=(n, m, method))
                 self.assertAlmostEqual(dtw2d_dist(a2, b2, ub=np.inf, method=method), expected2)
 
-    def test_constrained_matches_path_version(self):
+    def test_window_matches_path_version(self):
         rng = np.random.default_rng(11)
         for n, m, band in [(20, 20, 0), (20, 20, 3), (20, 30, 10), (30, 20, 12), (15, 15, 100), (300, 280, 25)]:
             a, b = rng.random(n), rng.random(m)
             a2, b2 = rng.random((n, 2)), rng.random((m, 2))
-            expected1 = constrained_dtw1d(a, b, band)[1]
-            expected2 = constrained_dtw2d(a2, b2, band)[1]
+            expected1 = dtw1d(a, b, window=band)[1]
+            expected2 = dtw2d(a2, b2, window=band)[1]
             for method in self.METHODS:
-                self.assertAlmostEqual(constrained_dtw1d_dist(a, b, band, method=method), expected1,
+                self.assertAlmostEqual(dtw1d_dist(a, b, window=band, method=method), expected1,
                                        msg=(n, m, band, method))
-                self.assertAlmostEqual(constrained_dtw1d_dist(a, b, band, ub=np.inf, method=method), expected1)
-                self.assertAlmostEqual(constrained_dtw2d_dist(a2, b2, band, method=method), expected2,
+                self.assertAlmostEqual(dtw1d_dist(a, b, window=band, ub=np.inf, method=method), expected1)
+                self.assertAlmostEqual(dtw2d_dist(a2, b2, window=band, method=method), expected2,
                                        msg=(n, m, band, method))
 
     def test_pruning_is_exact_for_many_random_pairs(self):
@@ -238,10 +278,10 @@ class DtwDistTest(TestCase):
             band = int(rng.integers(0, 40))
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
-                expected_band = constrained_dtw1d(a, b, band)[1]
+                expected_band = dtw1d(a, b, window=band)[1]
                 for method in self.METHODS:
                     self.assertAlmostEqual(dtw1d_dist(a, b, method=method), expected, msg=(n, m, method))
-                    self.assertAlmostEqual(constrained_dtw1d_dist(a, b, band, method=method), expected_band,
+                    self.assertAlmostEqual(dtw1d_dist(a, b, window=band, method=method), expected_band,
                                            msg=(n, m, band, method))
 
     def test_explicit_upper_bound(self):
