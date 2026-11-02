@@ -1,4 +1,6 @@
+include README.rst LICENSE
 recursive-include pydtw *.pyx *.py
 recursive-include test *.py
 recursive-include bench *.py
+exclude pydtw/*.cpp
 prune pydtw.egg-info

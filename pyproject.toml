@@ -1,6 +1,43 @@
 [build-system]
-requires = ["setuptools>=61", "Cython>=3.0", "numpy>=1.21"]
+requires = ["setuptools>=80", "Cython>=3.1"]
 build-backend = "setuptools.build_meta"
+
+[project]
+name = "pydtw"
+version = "3.0.0"
+description = "Fast Implementation of Dynamic Time Warping"
+readme = "README.rst"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Shunsuke Aihara", email = "aihara@argmax.jp" }]
+requires-python = ">=3.9"
+dependencies = ["numpy>=2.0"]
+classifiers = [
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Cython",
+    "Programming Language :: C++",
+    "Topic :: Scientific/Engineering",
+    "Operating System :: OS Independent",
+]
+
+[project.urls]
+Homepage = "https://github.com/shunsukeaihara/pydtw"
+Source = "https://github.com/shunsukeaihara/pydtw"
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[tool.setuptools.packages.find]
+include = ["pydtw*"]
 
 [tool.pytest.ini_options]
 testpaths = ["test"]
+
+[tool.cibuildwheel]
+# CPython only, 64-bit only, GIL builds only (the extension is not
+# free-threading aware yet).
+skip = "pp* *_i686 *-win32 cp3*t-*"
+test-requires = ["pytest"]
+test-sources = ["test"]
+test-command = "pytest test"
