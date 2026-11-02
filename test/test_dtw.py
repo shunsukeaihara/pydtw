@@ -4,7 +4,8 @@ from unittest import TestCase
 
 import numpy as np
 
-from pydtw import dtw1d, dtw2d, constrained_dtw1d, constrained_dtw2d
+from pydtw import (dtw1d, dtw2d, constrained_dtw1d, constrained_dtw2d,
+                   dtw1d_dist, dtw2d_dist, constrained_dtw1d_dist, constrained_dtw2d_dist)
 
 
 def reference_dtw(a, b, band=None):
@@ -195,3 +196,85 @@ class DtwTest(TestCase):
             dtw2d(np.zeros((0, 2)), np.zeros((3, 2)))
         with self.assertRaises(ValueError):
             dtw2d(np.zeros((3, 2)), np.zeros((3, 2)), metric="cosine")
+
+
+class DtwDistTest(TestCase):
+    METHODS = ("eap", "pruned")
+
+    def test_matches_path_version(self):
+        rng = np.random.default_rng(10)
+        for n, m in [(1, 1), (1, 9), (9, 1), (16, 16), (20, 45), (50, 13), (200, 200)]:
+            a, b = rng.random(n), rng.random(m)
+            a2, b2 = rng.random((n, 3)), rng.random((m, 3))
+            expected1 = dtw1d(a, b)[1]
+            expected2 = dtw2d(a2, b2)[1]
+            for method in self.METHODS:
+                self.assertAlmostEqual(dtw1d_dist(a, b, method=method), expected1, msg=(n, m, method))
+                self.assertAlmostEqual(dtw1d_dist(a, b, ub=np.inf, method=method), expected1)
+                self.assertAlmostEqual(dtw2d_dist(a2, b2, method=method), expected2, msg=(n, m, method))
+                self.assertAlmostEqual(dtw2d_dist(a2, b2, ub=np.inf, method=method), expected2)
+
+    def test_constrained_matches_path_version(self):
+        rng = np.random.default_rng(11)
+        for n, m, band in [(20, 20, 0), (20, 20, 3), (20, 30, 10), (30, 20, 12), (15, 15, 100), (300, 280, 25)]:
+            a, b = rng.random(n), rng.random(m)
+            a2, b2 = rng.random((n, 2)), rng.random((m, 2))
+            expected1 = constrained_dtw1d(a, b, band)[1]
+            expected2 = constrained_dtw2d(a2, b2, band)[1]
+            for method in self.METHODS:
+                self.assertAlmostEqual(constrained_dtw1d_dist(a, b, band, method=method), expected1,
+                                       msg=(n, m, band, method))
+                self.assertAlmostEqual(constrained_dtw1d_dist(a, b, band, ub=np.inf, method=method), expected1)
+                self.assertAlmostEqual(constrained_dtw2d_dist(a2, b2, band, method=method), expected2,
+                                       msg=(n, m, band, method))
+
+    def test_pruning_is_exact_for_many_random_pairs(self):
+        # Random walks are the typical DTW workload; exercise the pruning logic.
+        rng = np.random.default_rng(12)
+        for _ in range(300):
+            n, m = rng.integers(1, 40, size=2)
+            a, b = np.cumsum(rng.normal(size=n)), np.cumsum(rng.normal(size=m))
+            expected = dtw1d(a, b)[1]
+            band = int(rng.integers(0, 40))
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                expected_band = constrained_dtw1d(a, b, band)[1]
+                for method in self.METHODS:
+                    self.assertAlmostEqual(dtw1d_dist(a, b, method=method), expected, msg=(n, m, method))
+                    self.assertAlmostEqual(constrained_dtw1d_dist(a, b, band, method=method), expected_band,
+                                           msg=(n, m, band, method))
+
+    def test_explicit_upper_bound(self):
+        a = np.array([0, 0, 1, 1, 2, 4, 2, 1, 2, 0], dtype=np.float64)
+        b = np.array([1, 1, 1, 2, 2, 2, 2, 3, 2, 0], dtype=np.float64)
+        a2 = np.random.default_rng(13).random((30, 4))
+        b2 = a2 + 0.01
+        d = dtw2d(a2, b2)[1]
+        for method in self.METHODS:
+            self.assertEqual(dtw1d_dist(a, b, method=method), 4.0)
+            self.assertEqual(dtw1d_dist(a, b, ub=4.0, method=method), 4.0)
+            self.assertEqual(dtw1d_dist(a, b, ub=3.9, method=method), np.inf)
+            self.assertEqual(dtw1d_dist(a, b, ub=0.0, method=method), np.inf)
+            self.assertEqual(dtw1d_dist(a, a, ub=0.0, method=method), 0.0)
+            self.assertEqual(dtw2d_dist(a2, b2, ub=d, method=method), d)
+            self.assertEqual(dtw2d_dist(a2, b2, ub=d * 0.5, method=method), np.inf)
+
+    def test_exact_upper_bound_from_previous_result(self):
+        # ub equal to the true cost must never prune the optimum (rounding).
+        rng = np.random.default_rng(14)
+        for _ in range(100):
+            n, m = rng.integers(1, 60, size=2)
+            a, b = np.cumsum(rng.normal(size=n)), np.cumsum(rng.normal(size=m))
+            d = dtw1d(a, b)[1]
+            for method in self.METHODS:
+                self.assertEqual(dtw1d_dist(a, b, ub=d, method=method), d, msg=(n, m, method))
+
+    def test_invalid_input(self):
+        with self.assertRaises(ValueError):
+            dtw1d_dist(np.zeros(0), np.zeros(3))
+        with self.assertRaises(ValueError):
+            dtw2d_dist(np.zeros((3, 2)), np.zeros((3, 3)))
+        with self.assertRaises(ValueError):
+            dtw2d_dist(np.zeros((3, 2)), np.zeros((3, 2)), metric="cosine")
+        with self.assertRaises(ValueError):
+            dtw1d_dist(np.zeros(3), np.zeros(3), method="fast")
