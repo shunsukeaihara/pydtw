@@ -190,6 +190,15 @@ cdef bint _is_float32(dtype) except -1:
     raise ValueError("dtype must be float64 or float32, got {!r}".format(dtype))
 
 
+cdef inline double _slack(double cost) noexcept:
+    """A bound for the alignment pass of pruned_dtw*: the cost from the
+    distance kernel plus a relative 1e-9, because the SIMD kernel and the
+    row kernel may round differently (fused multiply-add, vector sums) and
+    an exact bound could prune the optimum. The alignment pass returns its
+    own exact cost, so the slack never changes the result."""
+    return cost + 1e-9 * cost if cost != INFINITY else cost
+
+
 cdef double _bound(ub) except? -1.0:
     cdef double bound = INFINITY if ub is None else float(ub)
     if bound != bound:
@@ -894,7 +903,7 @@ def pruned_dtw1d(a, b, window=None, method="eap", return_cost_matrix=True, metri
     cdef int mid = _metric_id(metric, 1)
     a2, b2 = a.reshape(-1, 1), b.reshape(-1, 1)
     cost = _dtw_dist(a2, b2, w, None, mid, method, np.float64, True)
-    return _dtw_path(a2, b2, w, cost, mid, return_cost_matrix)
+    return _dtw_path(a2, b2, w, _slack(cost), mid, return_cost_matrix)
 
 
 def pruned_dtw2d(a, b, window=None, metric="euclidean", method="eap", return_cost_matrix=True):
@@ -903,4 +912,4 @@ def pruned_dtw2d(a, b, window=None, metric="euclidean", method="eap", return_cos
     w = _resolve_window(a.shape[0], b.shape[0], window)
     cdef int mid = _metric_id(metric, 2)
     cost = _dtw_dist(a, b, w, None, mid, method, np.float64, True)
-    return _dtw_path(a, b, w, cost, mid, return_cost_matrix)
+    return _dtw_path(a, b, w, _slack(cost), mid, return_cost_matrix)
