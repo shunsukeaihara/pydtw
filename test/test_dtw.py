@@ -445,9 +445,11 @@ class MetricTest(TestCase):
             for method in ("eap", "pruned"):
                 self.assertAlmostEqual(dtw1d_dist(a, b, metric="sqeuclidean", method=method), ref_sq, msg=method)
                 self.assertAlmostEqual(pruned_dtw1d(a, b, metric="sqeuclidean", method=method)[1], ref_sq)
-            # 1-d sqeuclidean equals 2-d sqeuclidean with dim = 1
-            self.assertEqual(dtw1d_dist(a, b, metric="sqeuclidean"),
-                             dtw2d_dist(a.reshape(-1, 1), b.reshape(-1, 1), metric="sqeuclidean"))
+            # 1-d sqeuclidean equals 2-d sqeuclidean with dim = 1 (up to rounding:
+            # the n-d loop may be compiled with fused multiply-add)
+            self.assertAlmostEqual(dtw1d_dist(a, b, metric="sqeuclidean"),
+                                   dtw2d_dist(a.reshape(-1, 1), b.reshape(-1, 1), metric="sqeuclidean"),
+                                   places=12)
 
     def test_invalid_metric(self):
         a, b = np.zeros(3), np.zeros(3)
