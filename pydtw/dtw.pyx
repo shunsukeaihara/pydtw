@@ -782,9 +782,10 @@ def dtw1d_dist(a, b, window=None, ub=None, method="eap", metric="abs", dtype=np.
 
     ``method`` is the pruning scheme: ``"eap"`` (EAPrunedDTW, Herrmann &
     Webb 2021, default), ``"pruned"`` (PrunedDTW, Silva & Batista 2016) or
-    ``"none"``. All are exact. The SIMD anti-diagonal kernel is used
-    automatically when the CPU supports AVX2 or NEON, the scalar row kernels
-    otherwise; ``simd=False`` forces the row kernels (for benchmarking).
+    ``"none"``. All are exact and all are implemented in both kernels. The
+    SIMD anti-diagonal kernel is used automatically when the CPU supports
+    AVX2 or NEON, the scalar row kernels otherwise; ``simd=False`` forces
+    the row kernels (for benchmarking).
     ``dtype``: precision of the computation and its buffers, ``numpy.float64``
     (default) or ``numpy.float32``; float32 doubles the SIMD lanes at the
     price of about 1e-6 relative error and always runs on the anti-diagonal

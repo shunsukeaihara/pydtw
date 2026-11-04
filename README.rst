@@ -160,17 +160,20 @@ Arguments
     Pruning scheme of the distance-only functions: ``"eap"`` (EAPrunedDTW,
     Herrmann & Webb 2021, default), ``"pruned"`` (PrunedDTW, Silva & Batista
     2016) or ``"none"``. All return the exact cost; they differ in how many
-    cells they skip. Whether the computation runs on the SIMD kernel or on
-    the scalar row kernels is decided by the CPU, not by ``method``.
+    cells they skip. All three are implemented in both the SIMD anti-diagonal
+    kernel and the scalar row kernels, so the pruning pays off on every CPU
+    (see the benchmark grid below); which kernel runs is decided by the CPU,
+    not by ``method``.
 
 ``dtype``
     Precision of the computation and of the internal buffers, as for numpy
     ufuncs: ``numpy.float64`` (default) or ``numpy.float32``. Inputs are
     converted to it, the dynamic programming runs in it and the result is
     returned in it (Python float / float32 array). float32 doubles the SIMD
-    lanes and halves the memory traffic; the cost is then accurate to about
-    1e-6 relative (more for very long paths). float32 always uses the
-    anti-diagonal kernel (scalar on CPUs without SIMD).
+    lanes (8 instead of 4 with AVX2, 4 instead of 2 with NEON) and halves
+    the memory traffic, which is where its speed-up comes from; the cost is
+    then accurate to about 1e-6 relative (more for very long paths). float32
+    always uses the anti-diagonal kernel (scalar on CPUs without SIMD).
 
 ``simd``
     ``True`` (default) uses the SIMD anti-diagonal kernel when the CPU has
