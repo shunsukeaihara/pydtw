@@ -11,6 +11,23 @@ cimport cython
 from libc.math cimport fabs, sqrt, INFINITY
 from libc.float cimport DBL_EPSILON
 from libcpp.vector cimport vector
+from libc.math cimport NAN
+
+
+cdef extern from "simd/dtw_simd.hpp":
+    int pydtw_simd_level() noexcept nogil
+    const char* pydtw_simd_name() noexcept nogil
+    int pydtw_simd_lanes(int itemsize) noexcept nogil
+    double pydtw_dtw_ad_f64(const double* a, size_t n, const double* b, size_t m, size_t dim,
+                            int metric, size_t w, double ub, int pruning) noexcept nogil
+    float pydtw_dtw_ad_f32(const float* a, size_t n, const float* b, size_t m, size_t dim,
+                           int metric, size_t w, float ub, int pruning) noexcept nogil
+    void pydtw_dtw_batch_f64(const double* X, const double* Y, size_t N, size_t n, size_t m,
+                             size_t dim, int metric, size_t w, const double* ub, int pruning,
+                             double* out) noexcept nogil
+    void pydtw_dtw_batch_f32(const float* X, const float* Y, size_t N, size_t n, size_t m,
+                             size_t dim, int metric, size_t w, const float* ub, int pruning,
+                             float* out) noexcept nogil
 
 
 # ---------------------------------------------------------------------------
@@ -147,12 +164,39 @@ cdef int _metric_id(metric, int ndim) except -1:
             metric, ", ".join(sorted(table))))
 
 
+cdef enum:
+    # Pruning schemes; values match PYDTW_PRUNE_* in simd/dtw_simd.hpp.
+    METHOD_NONE = 0
+    METHOD_PRUNED = 1
+    METHOD_EAP = 2
+
+
 cdef int _method_id(method) except -1:
     if method == 'eap':
-        return 0
+        return METHOD_EAP
     if method == 'pruned':
-        return 1
-    raise ValueError("method must be 'eap' or 'pruned', got {!r}".format(method))
+        return METHOD_PRUNED
+    if method == 'none':
+        return METHOD_NONE
+    raise ValueError("method must be 'eap', 'pruned' or 'none', got {!r}".format(method))
+
+
+cdef bint _is_float32(dtype) except -1:
+    dt = np.dtype(dtype)
+    if dt == np.float64:
+        return False
+    if dt == np.float32:
+        return True
+    raise ValueError("dtype must be float64 or float32, got {!r}".format(dtype))
+
+
+cdef inline double _slack(double cost) noexcept:
+    """A bound for the alignment pass of pruned_dtw*: the cost from the
+    distance kernel plus a relative 1e-9, because the SIMD kernel and the
+    row kernel may round differently (fused multiply-add, vector sums) and
+    an exact bound could prune the optimum. The alignment pass returns its
+    own exact cost, so the slack never changes the result."""
+    return cost + 1e-9 * cost if cost != INFINITY else cost
 
 
 cdef double _bound(ub) except? -1.0:
@@ -541,28 +585,139 @@ cdef _dtw_path(const double[:, ::1] a, const double[:, ::1] b, Py_ssize_t w, dou
     return None, cost, align_a, align_b
 
 
-cdef double _dtw_dist(const double[:, ::1] a, const double[:, ::1] b, Py_ssize_t w, ub,
-                      int mid, method):
+cdef double _dtw_dist_simd(a, b, Py_ssize_t w, ub, int mid, int pruning, bint float32):
+    """Anti-diagonal SIMD kernel (C++). a, b are C-contiguous 2-d arrays."""
+    cdef const double[:, ::1] a64
+    cdef const double[:, ::1] b64
+    cdef const float[:, ::1] a32
+    cdef const float[:, ::1] b32
+    cdef double bound = NAN if ub is None else _bound(ub)
+    cdef double result
     cdef Py_ssize_t n = a.shape[0], m = b.shape[0], dim = a.shape[1]
-    # One leading INFINITY slot so that the EAP core may read index -1.
-    cdef vector[double] buf0 = vector[double](m + 2, INFINITY)
-    cdef vector[double] buf1 = vector[double](m + 2, INFINITY)
+    if float32:
+        a32 = np.ascontiguousarray(a, dtype=np.float32)
+        b32 = np.ascontiguousarray(b, dtype=np.float32)
+        with nogil:
+            result = pydtw_dtw_ad_f32(&a32[0, 0], n, &b32[0, 0], m, dim, mid, w, <float>bound, pruning)
+    else:
+        a64 = a
+        b64 = b
+        with nogil:
+            result = pydtw_dtw_ad_f64(&a64[0, 0], n, &b64[0, 0], m, dim, mid, w, bound, pruning)
+    return result
+
+
+cdef double _dtw_dist(a, b, Py_ssize_t w, ub, int mid, method, dtype, bint simd):
+    """Dispatch to the anti-diagonal SIMD kernel (when the CPU has one, or for
+    float32) or to the scalar row kernels. ``simd=False`` forces the row
+    kernels; it exists for benchmarking."""
+    cdef const double[:, ::1] av
+    cdef const double[:, ::1] bv
+    cdef Py_ssize_t n = a.shape[0], m = b.shape[0], dim = a.shape[1]
+    cdef vector[double] buf0
+    cdef vector[double] buf1
     cdef vector[double] rows
-    cdef double bound = _bound(ub), result
+    cdef double bound, result
     cdef bint auto_ub = ub is None
-    cdef int method_id = _method_id(method)
-    if method_id == 1:
+    cdef int pruning = _method_id(method)
+    cdef bint float32 = _is_float32(dtype)
+    if float32 and not simd:
+        raise ValueError("dtype=float32 is only available with simd=True")
+    if simd and (float32 or pydtw_simd_level() > 0):
+        return _dtw_dist_simd(a, b, w, ub, mid, pruning, float32)
+    av = a
+    bv = b
+    bound = _bound(ub)
+    # One leading INFINITY slot so that the EAP core may read index -1.
+    buf0 = vector[double](m + 2, INFINITY)
+    buf1 = vector[double](m + 2, INFINITY)
+    if pruning != METHOD_EAP:
         rows = vector[double](2 * (m + 1))
     with nogil:
-        if auto_ub:
-            bound = run_upper_bound(mid, &a[0, 0], n, &b[0, 0], m, dim)
-        if method_id == 0:
-            result = run_eap(mid, &a[0, 0], n, &b[0, 0], m, dim, w, bound,
+        if auto_ub and pruning != METHOD_NONE:
+            bound = run_upper_bound(mid, &av[0, 0], n, &bv[0, 0], m, dim)
+        if pruning == METHOD_EAP:
+            result = run_eap(mid, &av[0, 0], n, &bv[0, 0], m, dim, w, bound,
                              buf0.data() + 1, buf1.data() + 1)
-        else:
-            result = run_rows(mid, &a[0, 0], n, &b[0, 0], m, dim, w, bound,
+        elif pruning == METHOD_PRUNED:
+            result = run_rows(mid, &av[0, 0], n, &bv[0, 0], m, dim, w, bound,
                               rows.data(), m + 1, 2, NULL)
+        else:
+            result = run_rows(mid, &av[0, 0], n, &bv[0, 0], m, dim, w, INFINITY,
+                              rows.data(), m + 1, 2, NULL)
+            if result > bound:
+                result = INFINITY
     return result
+
+
+cdef _batch_inputs(X, Y, int ndim, str name_x, str name_y, dtype):
+    """Validate (N, len[, dim]) batches, broadcast a batch of one, return
+    C-contiguous arrays of the requested dtype."""
+    cdef bint float32 = _is_float32(dtype)
+    dt = np.float32 if float32 else np.float64
+    X = np.ascontiguousarray(X, dtype=dt)
+    Y = np.ascontiguousarray(Y, dtype=dt)
+    if X.ndim != ndim + 1 or Y.ndim != ndim + 1:
+        raise ValueError("{} and {} must be {}-dimensional batches, got shapes {} and {}".format(
+            name_x, name_y, ndim + 1, X.shape, Y.shape))
+    if X.shape[1] == 0 or Y.shape[1] == 0:
+        raise ValueError("sequences must not be empty")
+    if ndim == 2 and X.shape[2] != Y.shape[2]:
+        raise ValueError("Matrices must have same dimension. {}={}, {}={}".format(
+            name_x, X.shape[2], name_y, Y.shape[2]))
+    if X.shape[0] != Y.shape[0]:
+        if X.shape[0] == 1:
+            X = np.ascontiguousarray(np.broadcast_to(X, (Y.shape[0],) + X.shape[1:]))
+        elif Y.shape[0] == 1:
+            Y = np.ascontiguousarray(np.broadcast_to(Y, (X.shape[0],) + Y.shape[1:]))
+        else:
+            raise ValueError("batch sizes differ: {} vs {}".format(X.shape[0], Y.shape[0]))
+    if np.isnan(X).any():
+        raise ValueError("{} contains NaN".format(name_x))
+    if np.isnan(Y).any():
+        raise ValueError("{} contains NaN".format(name_y))
+    return X, Y, float32
+
+
+cdef _batch_bounds(ub, Py_ssize_t N, dt):
+    if ub is None:
+        return np.full(N, np.nan, dtype=dt)
+    ubs = np.asarray(ub, dtype=np.float64)
+    if ubs.ndim == 0:
+        ubs = np.full(N, float(ubs), dtype=np.float64)
+    elif ubs.shape != (N,):
+        raise ValueError("ub must be a scalar or have shape ({},), got {}".format(N, ubs.shape))
+    if np.isnan(ubs).any():
+        raise ValueError("ub must not be NaN")
+    return np.ascontiguousarray(ubs, dtype=dt)
+
+
+cdef _dtw_dist_batch(X, Y, Py_ssize_t w, ub, int mid, int pruning, bint float32):
+    """X, Y: C-contiguous (N, len, dim) arrays of the same dtype."""
+    cdef const double[:, :, ::1] X64
+    cdef const double[:, :, ::1] Y64
+    cdef const double[::1] ub64
+    cdef double[::1] out64
+    cdef const float[:, :, ::1] X32
+    cdef const float[:, :, ::1] Y32
+    cdef const float[::1] ub32
+    cdef float[::1] out32
+    cdef Py_ssize_t N = X.shape[0], n = X.shape[1], m = Y.shape[1], dim = X.shape[2]
+    if N == 0:
+        return np.empty(0, dtype=np.float32 if float32 else np.float64)
+    if float32:
+        out = np.empty(N, dtype=np.float32)
+        X32, Y32, ub32, out32 = X, Y, _batch_bounds(ub, N, np.float32), out
+        with nogil:
+            pydtw_dtw_batch_f32(&X32[0, 0, 0], &Y32[0, 0, 0], N, n, m, dim, mid, w,
+                                &ub32[0], pruning, &out32[0])
+    else:
+        out = np.empty(N, dtype=np.float64)
+        X64, Y64, ub64, out64 = X, Y, _batch_bounds(ub, N, np.float64), out
+        with nogil:
+            pydtw_dtw_batch_f64(&X64[0, 0, 0], &Y64[0, 0, 0], N, n, m, dim, mid, w,
+                                &ub64[0], pruning, &out64[0])
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -615,34 +770,126 @@ def constrained_dtw2d(a, b, constraint=0, metric="euclidean"):
     return dtw2d(a, b, window=constraint, metric=metric)
 
 
-def dtw1d_dist(a, b, window=None, ub=None, method="eap", metric="abs"):
+def dtw1d_dist(a, b, window=None, ub=None, method="eap", metric="abs", dtype=np.float64,
+               simd=True):
     """DTW cost of two 1-d sequences without computing the alignment.
 
-    Uses O(len(b)) memory. ``window`` and ``metric`` as in :func:`dtw1d`.
-    ``ub`` is an upper bound on the cost: cells above it are pruned and
-    ``inf`` is returned when the true cost exceeds it. ``None`` (default)
-    derives a bound from a simple warping path, which keeps the result
-    exact; ``np.inf`` disables pruning.
+    Uses O(len(a) + len(b)) memory. ``window`` and ``metric`` as in
+    :func:`dtw1d`. ``ub`` is an upper bound on the cost: cells above it are
+    pruned and ``inf`` is returned when the true cost exceeds it. ``None``
+    (default) derives a bound from a simple warping path, which keeps the
+    result exact; ``np.inf`` disables pruning.
 
-    ``method`` selects the pruning scheme: ``"eap"`` (EAPrunedDTW, Herrmann &
-    Webb 2021, default) or ``"pruned"`` (PrunedDTW, Silva & Batista 2016).
-    Both are exact and run the same inner loop; EAP prunes a little more.
+    ``method`` is the pruning scheme: ``"eap"`` (EAPrunedDTW, Herrmann &
+    Webb 2021, default), ``"pruned"`` (PrunedDTW, Silva & Batista 2016) or
+    ``"none"``. All are exact and all are implemented in both kernels. The
+    SIMD anti-diagonal kernel is used automatically when the CPU supports
+    AVX2 or NEON, the scalar row kernels otherwise; ``simd=False`` forces
+    the row kernels (for benchmarking).
+    ``dtype``: precision of the computation and its buffers, ``numpy.float64``
+    (default) or ``numpy.float32``; float32 doubles the SIMD lanes at the
+    price of about 1e-6 relative error and always runs on the anti-diagonal
+    kernel.
     """
     a = _as_sequence(a, 1, "a")
     b = _as_sequence(b, 1, "b")
     w = _resolve_window(a.shape[0], b.shape[0], window)
-    return _dtw_dist(a.reshape(-1, 1), b.reshape(-1, 1), w, ub, _metric_id(metric, 1), method)
+    return _dtw_dist(a.reshape(-1, 1), b.reshape(-1, 1), w, ub, _metric_id(metric, 1), method,
+                     dtype, simd)
 
 
-def dtw2d_dist(a, b, window=None, metric="euclidean", ub=None, method="eap"):
+def dtw2d_dist(a, b, window=None, metric="euclidean", ub=None, method="eap", dtype=np.float64,
+               simd=True):
     """DTW cost of two multivariate sequences of shape (len, dim) without the alignment.
 
     See :func:`dtw2d` for ``metric`` and :func:`dtw1d_dist` for ``window``,
-    ``ub`` and ``method``.
+    ``ub``, ``method``, ``dtype`` and ``simd``.
     """
     a, b = _as_pair_2d(a, b)
     w = _resolve_window(a.shape[0], b.shape[0], window)
-    return _dtw_dist(a, b, w, ub, _metric_id(metric, 2), method)
+    return _dtw_dist(a, b, w, ub, _metric_id(metric, 2), method, dtype, simd)
+
+
+def dtw1d_dist_batch(X, Y, window=None, ub=None, method="eap", metric="abs", dtype=np.float64):
+    """DTW costs of N pairs ``(X[k], Y[k])`` of 1-d sequences, one pair per SIMD lane.
+
+    ``X`` has shape ``(N, n)`` and ``Y`` shape ``(N, m)``; a batch of size 1
+    is broadcast against the other. ``ub`` is ``None`` (bound derived per
+    pair, exact), a scalar or an array of ``N`` bounds; pairs whose cost
+    exceeds their bound get ``inf``. ``method`` as in :func:`dtw1d_dist`
+    (here it only changes how early a pair can be abandoned). Returns an
+    array of ``N`` costs with the requested ``dtype``.
+    """
+    X, Y, float32 = _batch_inputs(X, Y, 1, "X", "Y", dtype)
+    w = _resolve_window(X.shape[1], Y.shape[1], window)
+    return _dtw_dist_batch(X[:, :, None], Y[:, :, None], w, ub, _metric_id(metric, 1),
+                           _method_id(method), float32)
+
+
+def dtw2d_dist_batch(X, Y, window=None, metric="euclidean", ub=None, method="eap",
+                     dtype=np.float64):
+    """DTW costs of N pairs of multivariate sequences, ``X`` of shape ``(N, n, dim)``
+    and ``Y`` of shape ``(N, m, dim)``. See :func:`dtw1d_dist_batch`."""
+    X, Y, float32 = _batch_inputs(X, Y, 2, "X", "Y", dtype)
+    w = _resolve_window(X.shape[1], Y.shape[1], window)
+    return _dtw_dist_batch(X, Y, w, ub, _metric_id(metric, 2), _method_id(method), float32)
+
+
+cdef _dist_matrix(X, Y, int ndim, window, int mid, int pruning, dtype):
+    symmetric = Y is None
+    if symmetric:
+        Y = X
+    float32 = _is_float32(dtype)
+    dt = np.float32 if float32 else np.float64
+    X = np.ascontiguousarray(X, dtype=dt)
+    Y = np.ascontiguousarray(Y, dtype=dt)
+    if X.ndim != ndim + 1 or Y.ndim != ndim + 1:
+        raise ValueError("X and Y must be {}-dimensional batches, got shapes {} and {}".format(
+            ndim + 1, X.shape, Y.shape))
+    if ndim == 1:
+        X, Y = X[:, :, None], Y[:, :, None]
+    cdef Py_ssize_t N = X.shape[0], M = Y.shape[0], i
+    out = np.empty((N, M), dtype=dt)
+    if N == 0 or M == 0:
+        return out
+    w = _resolve_window(X.shape[1], Y.shape[1], window)
+    for i in range(N):
+        if symmetric:
+            Xi, Yi, float32 = _batch_inputs(X[i:i + 1], Y[i:], 2, "X", "Y", dt)
+            row = _dtw_dist_batch(Xi, Yi, w, None, mid, pruning, float32)
+            out[i, i:] = row
+            out[i:, i] = row
+        else:
+            Xi, Yi, float32 = _batch_inputs(X[i:i + 1], Y, 2, "X", "Y", dt)
+            out[i] = _dtw_dist_batch(Xi, Yi, w, None, mid, pruning, float32)
+    return out
+
+
+def dtw1d_dist_matrix(X, Y=None, window=None, method="eap", metric="abs", dtype=np.float64):
+    """All-pairs DTW costs between the rows of ``X`` (shape ``(N, n)``) and
+    ``Y`` (shape ``(M, m)``), as an ``(N, M)`` array. ``Y=None`` computes the
+    symmetric matrix of ``X`` with itself (only the upper triangle is
+    evaluated). Uses the batch kernel with a per-pair bound."""
+    return _dist_matrix(X, Y, 1, window, _metric_id(metric, 1), _method_id(method), dtype)
+
+
+def dtw2d_dist_matrix(X, Y=None, window=None, metric="euclidean", method="eap", dtype=np.float64):
+    """All-pairs DTW costs between batches of multivariate sequences,
+    ``X`` of shape ``(N, n, dim)`` and ``Y`` of shape ``(M, m, dim)``.
+    See :func:`dtw1d_dist_matrix`."""
+    return _dist_matrix(X, Y, 2, window, _metric_id(metric, 2), _method_id(method), dtype)
+
+
+def simd_info():
+    """Which SIMD kernel is active and how many lanes it has.
+
+    Returns ``{"simd": "avx2" | "neon" | "scalar", "lanes_float64": int,
+    "lanes_float32": int}``. The environment variable ``PYDTW_SIMD``
+    (``scalar``, ``avx2``, ``neon`` or ``auto``) overrides the detection when
+    the module is first used."""
+    return {"simd": pydtw_simd_name().decode(),
+            "lanes_float64": pydtw_simd_lanes(8),
+            "lanes_float32": pydtw_simd_lanes(4)}
 
 
 def pruned_dtw1d(a, b, window=None, method="eap", return_cost_matrix=True, metric="abs"):
@@ -657,8 +904,8 @@ def pruned_dtw1d(a, b, window=None, method="eap", return_cost_matrix=True, metri
     w = _resolve_window(a.shape[0], b.shape[0], window)
     cdef int mid = _metric_id(metric, 1)
     a2, b2 = a.reshape(-1, 1), b.reshape(-1, 1)
-    cost = _dtw_dist(a2, b2, w, None, mid, method)
-    return _dtw_path(a2, b2, w, cost, mid, return_cost_matrix)
+    cost = _dtw_dist(a2, b2, w, None, mid, method, np.float64, True)
+    return _dtw_path(a2, b2, w, _slack(cost), mid, return_cost_matrix)
 
 
 def pruned_dtw2d(a, b, window=None, metric="euclidean", method="eap", return_cost_matrix=True):
@@ -666,5 +913,5 @@ def pruned_dtw2d(a, b, window=None, metric="euclidean", method="eap", return_cos
     a, b = _as_pair_2d(a, b)
     w = _resolve_window(a.shape[0], b.shape[0], window)
     cdef int mid = _metric_id(metric, 2)
-    cost = _dtw_dist(a, b, w, None, mid, method)
-    return _dtw_path(a, b, w, cost, mid, return_cost_matrix)
+    cost = _dtw_dist(a, b, w, None, mid, method, np.float64, True)
+    return _dtw_path(a, b, w, _slack(cost), mid, return_cost_matrix)

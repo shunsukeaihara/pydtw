@@ -12,7 +12,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest]
         python-version: ["3.10", "3.14", "3.15"]
     steps:
       - uses: actions/checkout@v7.0.1
@@ -21,5 +21,9 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Install
         run: python -m pip install -e ".[test]"
-      - name: Test
+      - name: Test (detected SIMD kernel)
         run: pytest -q
+      - name: Test (scalar kernel)
+        run: pytest -q
+        env:
+          PYDTW_SIMD: scalar

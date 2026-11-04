@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
-"""Benchmark of the distance-only API (no pruning vs PrunedDTW vs EAPrunedDTW)
-and of the alignment API (with and without the cost matrix).
+"""Benchmark of the distance-only API: pruning scheme (none / pruned / eap)
+x kernel (scalar row kernels via simd=False, SIMD float64, SIMD float32),
+plus batches, distance matrices and the alignment API.
 
 Run with ``python bench/bench_dist.py`` after ``pip install -e .``.
 """
@@ -8,7 +9,11 @@ import time
 
 import numpy as np
 
-from pydtw import dtw1d, dtw1d_dist, dtw2d_dist, pruned_dtw1d
+from pydtw import (dtw1d, dtw1d_dist, dtw2d_dist, pruned_dtw1d, dtw1d_dist_batch,
+                   dtw1d_dist_matrix, simd_info)
+
+METHODS = ("none", "pruned", "eap")
+KERNELS = (("scalar", dict(simd=False)), ("simd f64", dict()), ("simd f32", dict(dtype=np.float32)))
 
 
 def best_of(f, *args, reps=3, **kw):
@@ -21,14 +26,29 @@ def best_of(f, *args, reps=3, **kw):
     return min(times)
 
 
-def row(name, f, x, y, **kw):
-    none = best_of(f, x, y, ub=np.inf, **kw)
-    pruned = best_of(f, x, y, method="pruned", **kw)
-    eap = best_of(f, x, y, method="eap", **kw)
-    print("{:34s} {:8.3f}s {:8.3f}s {:8.3f}s".format(name, none, pruned, eap))
+def grid(f, *args, **kw):
+    """9 timings: for each kernel, the three pruning schemes."""
+    out = []
+    for _, kkw in KERNELS:
+        for method in METHODS:
+            out.append(best_of(f, *args, method=method, **kkw, **kw))
+    return out
+
+
+def header(label):
+    print("{:34s} {:>29s}   {:>29s}   {:>29s}".format(label, "scalar", "simd f64", "simd f32"))
+    print("{:34s} {}".format("", "   ".join("{:>9s} {:>9s} {:>9s}".format(*METHODS) for _ in KERNELS)))
+
+
+def row(name, ts):
+    cells = ["{:8.3f}s".format(t) for t in ts]
+    print("{:34s} {}   {}   {}".format(name, " ".join(cells[0:3]), " ".join(cells[3:6]), " ".join(cells[6:9])))
 
 
 def main():
+    info = simd_info()
+    print("SIMD: {} ({} float64 lanes, {} float32 lanes)".format(
+        info["simd"], info["lanes_float64"], info["lanes_float32"]))
     rng = np.random.default_rng(0)
     n = 5000
     a = np.cumsum(rng.normal(size=n))
@@ -40,32 +60,43 @@ def main():
             np.sin(np.linspace(0.2, 50.2, n)) + 0.05 * rng.normal(size=n)),
         "near-identical (a, a + 0.01 noise)": (a, a + 0.01 * rng.normal(size=n)),
     }
-    print("1-d, n = m = {}".format(n))
-    print("{:34s} {:>9s} {:>9s} {:>9s}".format("case", "no prune", "pruned", "eap"))
+    print("\n1-d distance, n = m = {} (seconds, best of 3)".format(n))
+    header("case")
     for name, (x, y) in cases.items():
-        row(name, dtw1d_dist, x, y)
+        row(name, grid(dtw1d_dist, x, y))
     x, y = cases["random walk"]
-    row("random walk, window = 10%", dtw1d_dist, x, y, window=n // 10)
+    row("random walk, window = 10%", grid(dtw1d_dist, x, y, window=n // 10))
     x = np.cumsum(rng.normal(size=(n, 8)), axis=0)
     y = np.cumsum(rng.normal(size=(n, 8)), axis=0)
-    row("2-d dim = 8 random walk", dtw2d_dist, x, y)
+    row("2-d dim = 8 random walk", grid(dtw2d_dist, x, y))
 
     n = 1000
     q = np.cumsum(rng.normal(size=n))
     cands = [np.cumsum(rng.normal(size=n)) for _ in range(100)] + [q + 0.1 * rng.normal(size=n)]
+    C = np.array(cands)
 
-    def nn(method):
+    def nn(method, **kw):
         best = np.inf
         for c in cands:
-            best = min(best, dtw1d_dist(q, c, ub=best, method=method))
+            best = min(best, dtw1d_dist(q, c, ub=best, method=method, **kw))
         return best
 
-    def nn_no_prune():
-        return min(dtw1d_dist(q, c, ub=np.inf) for c in cands)
+    print("\n1-NN search, {} candidates, n = {} (best-so-far as ub)".format(len(cands), n))
+    header("")
+    row("per-pair dtw1d_dist", grid(nn))
+    print("{:34s} {}".format("dtw1d_dist_batch (f64 / f32)", "   ".join(
+        "{:8.3f}s".format(best_of(lambda **kw: dtw1d_dist_batch(q[None, :], C, **kw).min(), **kw))
+        for kw in (dict(), dict(dtype=np.float32)))))
 
-    print("\n1-NN search, {} candidates, n = {}".format(len(cands), n))
+    N, n = 200, 100
+    X = np.cumsum(rng.normal(size=(N, n)), axis=1)
+    print("\ndistance matrix, {} x {} series of length {}".format(N, N, n))
+    print("{:34s} {:>9s} {:>9s} {:>9s}".format("", "loop", "matrix f64", "matrix f32"))
     print("{:34s} {:8.3f}s {:8.3f}s {:8.3f}s".format(
-        "best-so-far as ub", best_of(nn_no_prune), best_of(nn, "pruned"), best_of(nn, "eap")))
+        "all pairs",
+        best_of(lambda: [[dtw1d_dist(x, y) for y in X] for x in X], reps=1),
+        best_of(dtw1d_dist_matrix, X),
+        best_of(dtw1d_dist_matrix, X, dtype=np.float32)))
 
     n = 5000
     print("\nalignment, 1-d, n = m = {}".format(n))
