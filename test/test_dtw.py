@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 from pydtw import (dtw1d, dtw2d, dtw1d_dist, dtw2d_dist, pruned_dtw1d, pruned_dtw2d,
+                   dtw1d_dist_batch, dtw2d_dist_batch, dtw1d_dist_matrix, dtw2d_dist_matrix,
                    constrained_dtw1d, constrained_dtw2d)
 
 
@@ -463,3 +464,217 @@ class MetricTest(TestCase):
                 dtw2d(np.zeros((3, 2)), np.zeros((3, 2)), metric=bad)
             with self.assertRaises(ValueError):
                 dtw2d_dist(np.zeros((3, 2)), np.zeros((3, 2)), metric=bad)
+
+
+class SimdTest(TestCase):
+    """The anti-diagonal SIMD kernel must agree with the row kernels."""
+
+    def test_simd_info(self):
+        from pydtw import simd_info
+        info = simd_info()
+        self.assertIn(info["simd"], ("avx2", "neon", "scalar"))
+        self.assertGreaterEqual(info["lanes_float64"], 1)
+        self.assertEqual(info["lanes_float32"], 2 * info["lanes_float64"]
+                         if info["simd"] != "scalar" else 1)
+
+    def test_matches_eap_1d(self):
+        rng = np.random.default_rng(50)
+        for n, m in [(1, 1), (1, 9), (9, 1), (2, 2), (5, 13), (13, 5), (64, 64), (257, 130), (130, 257)]:
+            for kind in ("noise", "walk"):
+                a = rng.random(n) if kind == "noise" else np.cumsum(rng.normal(size=n))
+                b = rng.random(m) if kind == "noise" else np.cumsum(rng.normal(size=m))
+                ref = dtw1d_dist(a, b, method="eap")
+                for ub in (None, np.inf):
+                    self.assertAlmostEqual(dtw1d_dist(a, b, ub=ub, method="simd"), ref, places=9,
+                                           msg=(n, m, kind, ub))
+                for metric in ("abs", "sqeuclidean"):
+                    self.assertAlmostEqual(dtw1d_dist(a, b, metric=metric, method="simd"),
+                                           dtw1d_dist(a, b, metric=metric, method="eap"), places=9)
+
+    def test_matches_eap_with_window(self):
+        rng = np.random.default_rng(51)
+        for n, m in [(20, 20), (20, 35), (35, 20), (100, 90)]:
+            a, b = np.cumsum(rng.normal(size=n)), np.cumsum(rng.normal(size=m))
+            for band in (0, 1, 3, 7, 25, 200):
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    ref = dtw1d_dist(a, b, window=band, method="eap")
+                    got = dtw1d_dist(a, b, window=band, method="simd")
+                    got_noprune = dtw1d_dist(a, b, window=band, method="simd", ub=np.inf)
+                self.assertAlmostEqual(got, ref, places=9, msg=(n, m, band))
+                self.assertAlmostEqual(got_noprune, ref, places=9, msg=(n, m, band))
+
+    def test_matches_eap_2d(self):
+        rng = np.random.default_rng(52)
+        for n, m, d in [(1, 1, 3), (7, 5, 1), (12, 15, 3), (40, 33, 5), (33, 40, 8)]:
+            a = np.cumsum(rng.normal(size=(n, d)), axis=0)
+            b = np.cumsum(rng.normal(size=(m, d)), axis=0)
+            for metric in ("euclidean", "sqeuclidean", "cityblock", "chebyshev"):
+                ref = dtw2d_dist(a, b, metric=metric, method="eap")
+                self.assertAlmostEqual(dtw2d_dist(a, b, metric=metric, method="simd"), ref,
+                                       places=9, msg=(n, m, d, metric))
+                self.assertAlmostEqual(dtw2d_dist(a, b, metric=metric, method="simd", ub=np.inf), ref,
+                                       places=9, msg=(n, m, d, metric))
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    self.assertAlmostEqual(dtw2d_dist(a, b, metric=metric, method="simd", window=4),
+                                           dtw2d_dist(a, b, metric=metric, method="eap", window=4),
+                                           places=9, msg=(n, m, d, metric))
+
+    def test_explicit_upper_bound(self):
+        a = np.array([0, 0, 1, 1, 2, 4, 2, 1, 2, 0], dtype=np.float64)
+        b = np.array([1, 1, 1, 2, 2, 2, 2, 3, 2, 0], dtype=np.float64)
+        self.assertEqual(dtw1d_dist(a, b, method="simd"), 4.0)
+        self.assertEqual(dtw1d_dist(a, b, method="simd", ub=4.0), 4.0)
+        self.assertEqual(dtw1d_dist(a, b, method="simd", ub=3.9), np.inf)
+        self.assertEqual(dtw1d_dist(a, b, method="simd", ub=0.0), np.inf)
+        self.assertEqual(dtw1d_dist(a, a, method="simd", ub=0.0), 0.0)
+        rng = np.random.default_rng(53)
+        for _ in range(100):
+            n, m = rng.integers(1, 60, size=2)
+            x, y = np.cumsum(rng.normal(size=n)), np.cumsum(rng.normal(size=m))
+            d = dtw1d_dist(x, y, method="eap")
+            self.assertAlmostEqual(dtw1d_dist(x, y, method="simd", ub=d), d, places=9, msg=(n, m))
+            self.assertEqual(dtw1d_dist(x, y, method="simd", ub=d * 0.999 - 1e-9), np.inf)
+
+    def test_many_random_pairs(self):
+        rng = np.random.default_rng(54)
+        for _ in range(300):
+            n, m = rng.integers(1, 40, size=2)
+            a, b = np.cumsum(rng.normal(size=n)), np.cumsum(rng.normal(size=m))
+            band = int(rng.integers(0, 40))
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                self.assertAlmostEqual(dtw1d_dist(a, b, method="simd"), dtw1d_dist(a, b, method="eap"), places=9)
+                self.assertAlmostEqual(dtw1d_dist(a, b, window=band, method="simd"),
+                                       dtw1d_dist(a, b, window=band, method="eap"), places=9, msg=(n, m, band))
+
+    def test_float32(self):
+        rng = np.random.default_rng(55)
+        for n, m in [(1, 1), (10, 17), (200, 180)]:
+            a, b = np.cumsum(rng.normal(size=n)), np.cumsum(rng.normal(size=m))
+            ref = dtw1d_dist(a, b)
+            got = dtw1d_dist(a, b, dtype=np.float32)
+            self.assertIsInstance(got, float)
+            self.assertLess(abs(got - ref), 1e-4 * max(1.0, abs(ref)), (n, m))
+            self.assertLess(abs(dtw1d_dist(a, b, dtype=np.float32, ub=np.inf) - ref), 1e-4 * max(1.0, abs(ref)))
+            a2, b2 = rng.random((n, 3)), rng.random((m, 3))
+            ref2 = dtw2d_dist(a2, b2)
+            self.assertLess(abs(dtw2d_dist(a2, b2, dtype=np.float32) - ref2), 1e-4 * max(1.0, abs(ref2)))
+        with self.assertRaises(ValueError):
+            dtw1d_dist(a, b, dtype=np.float32, method="eap")
+        with self.assertRaises(ValueError):
+            dtw1d_dist(a, b, dtype=np.int32)
+
+    def test_pruned_alignment_uses_default_method(self):
+        rng = np.random.default_rng(56)
+        a, b = np.cumsum(rng.normal(size=50)), np.cumsum(rng.normal(size=60))
+        ref = dtw1d(a, b)
+        for method in ("auto", "simd", "eap", "pruned"):
+            got = pruned_dtw1d(a, b, method=method)
+            self.assertAlmostEqual(got[1], ref[1], places=9)
+            self.assertEqual(got[2:], ref[2:])
+
+    def test_forced_scalar_kernel_in_subprocess(self):
+        import subprocess, sys, os
+        code = (
+            "import numpy as np, pydtw\n"
+            "assert pydtw.simd_info()['simd'] == 'scalar', pydtw.simd_info()\n"
+            "rng = np.random.default_rng(0)\n"
+            "for n, m in [(1, 1), (7, 20), (64, 50)]:\n"
+            "    a, b = np.cumsum(rng.normal(size=n)), np.cumsum(rng.normal(size=m))\n"
+            "    ref = pydtw.dtw1d_dist(a, b, method='eap')\n"
+            "    assert abs(pydtw.dtw1d_dist(a, b, method='simd') - ref) < 1e-9\n"
+            "    assert abs(pydtw.dtw1d_dist(a, b, method='simd', dtype=np.float32) - ref) < 1e-4 * max(1, abs(ref))\n"
+            "    X = np.cumsum(rng.normal(size=(5, n)), axis=1); Y = np.cumsum(rng.normal(size=(5, m)), axis=1)\n"
+            "    got = pydtw.dtw1d_dist_batch(X, Y)\n"
+            "    exp = [pydtw.dtw1d_dist(X[k], Y[k], method='eap') for k in range(5)]\n"
+            "    assert np.allclose(got, exp), (got, exp)\n"
+            "print('ok')\n"
+        )
+        env = dict(os.environ, PYDTW_SIMD="scalar")
+        out = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertIn("ok", out.stdout)
+
+
+class BatchTest(TestCase):
+    def test_batch_matches_pairs(self):
+        rng = np.random.default_rng(60)
+        for N, n, m in [(1, 10, 10), (3, 7, 12), (9, 30, 25), (17, 50, 50)]:
+            X = np.cumsum(rng.normal(size=(N, n)), axis=1)
+            Y = np.cumsum(rng.normal(size=(N, m)), axis=1)
+            exp = np.array([dtw1d_dist(X[k], Y[k], method="eap") for k in range(N)])
+            for ub in (None, np.inf):
+                got = dtw1d_dist_batch(X, Y, ub=ub)
+                self.assertEqual(got.shape, (N,))
+                self.assertEqual(got.dtype, np.float64)
+                np.testing.assert_allclose(got, exp, rtol=1e-12, atol=1e-9)
+            for metric in ("abs", "sqeuclidean"):
+                exp_m = [dtw1d_dist(X[k], Y[k], metric=metric, method="eap") for k in range(N)]
+                np.testing.assert_allclose(dtw1d_dist_batch(X, Y, metric=metric), exp_m, rtol=1e-12, atol=1e-9)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                for band in (0, 3, 10):
+                    exp_w = [dtw1d_dist(X[k], Y[k], window=band, method="eap") for k in range(N)]
+                    np.testing.assert_allclose(dtw1d_dist_batch(X, Y, window=band), exp_w, rtol=1e-12, atol=1e-9)
+            got32 = dtw1d_dist_batch(X, Y, dtype=np.float32)
+            self.assertEqual(got32.dtype, np.float32)
+            np.testing.assert_allclose(got32, exp, rtol=1e-4)
+
+    def test_batch_2d(self):
+        rng = np.random.default_rng(61)
+        N, n, m, d = 6, 20, 15, 3
+        X = np.cumsum(rng.normal(size=(N, n, d)), axis=1)
+        Y = np.cumsum(rng.normal(size=(N, m, d)), axis=1)
+        for metric in ("euclidean", "sqeuclidean", "cityblock", "chebyshev"):
+            exp = [dtw2d_dist(X[k], Y[k], metric=metric, method="eap") for k in range(N)]
+            np.testing.assert_allclose(dtw2d_dist_batch(X, Y, metric=metric), exp, rtol=1e-12, atol=1e-9)
+
+    def test_batch_bounds_and_broadcast(self):
+        rng = np.random.default_rng(62)
+        N, n = 7, 30
+        q = np.cumsum(rng.normal(size=(1, n)))
+        Y = np.cumsum(rng.normal(size=(N, n)), axis=1)
+        Y[3] = q + 0.01 * rng.normal(size=n)
+        exp = np.array([dtw1d_dist(q, Y[k], method="eap") for k in range(N)])
+        got = dtw1d_dist_batch(q[None, :], Y)          # broadcast query
+        np.testing.assert_allclose(got, exp, rtol=1e-12, atol=1e-9)
+        got = dtw1d_dist_batch(Y, q[None, :])          # broadcast the other side
+        exp_t = np.array([dtw1d_dist(Y[k], q, method="eap") for k in range(N)])
+        np.testing.assert_allclose(got, exp_t, rtol=1e-12, atol=1e-9)
+        # scalar bound: everything above it becomes inf, the near copy survives
+        thr = exp[3] * 1.5
+        got = dtw1d_dist_batch(q[None, :], Y, ub=thr)
+        for k in range(N):
+            if exp[k] <= thr:
+                self.assertAlmostEqual(got[k], exp[k], places=9)
+            else:
+                self.assertEqual(got[k], np.inf)
+        # per-pair bounds equal to the exact cost keep every pair
+        np.testing.assert_allclose(dtw1d_dist_batch(q[None, :], Y, ub=exp), exp, rtol=1e-12, atol=1e-9)
+        with self.assertRaises(ValueError):
+            dtw1d_dist_batch(q[None, :], Y, ub=np.zeros(3))
+        with self.assertRaises(ValueError):
+            dtw1d_dist_batch(np.zeros((2, 5)), np.zeros((3, 5)))
+        with self.assertRaises(ValueError):
+            dtw1d_dist_batch(np.zeros((2, 0)), np.zeros((2, 5)))
+        with self.assertRaises(ValueError):
+            dtw1d_dist_batch(np.array([[0.0, np.nan]]), np.zeros((1, 2)))
+        self.assertEqual(dtw1d_dist_batch(np.zeros((0, 5)), np.zeros((0, 5))).shape, (0,))
+
+    def test_matrix(self):
+        rng = np.random.default_rng(63)
+        X = np.cumsum(rng.normal(size=(5, 20)), axis=1)
+        Y = np.cumsum(rng.normal(size=(4, 25)), axis=1)
+        exp = np.array([[dtw1d_dist(x, y, method="eap") for y in Y] for x in X])
+        np.testing.assert_allclose(dtw1d_dist_matrix(X, Y), exp, rtol=1e-12, atol=1e-9)
+        exp_sym = np.array([[dtw1d_dist(x, y, method="eap") for y in X] for x in X])
+        got = dtw1d_dist_matrix(X)
+        np.testing.assert_allclose(got, exp_sym, rtol=1e-12, atol=1e-9)
+        np.testing.assert_array_equal(got, got.T)
+        X2 = np.cumsum(rng.normal(size=(3, 10, 2)), axis=1)
+        Y2 = np.cumsum(rng.normal(size=(4, 12, 2)), axis=1)
+        exp2 = np.array([[dtw2d_dist(x, y, method="eap") for y in Y2] for x in X2])
+        np.testing.assert_allclose(dtw2d_dist_matrix(X2, Y2), exp2, rtol=1e-12, atol=1e-9)
+        self.assertEqual(dtw1d_dist_matrix(np.zeros((0, 5)), Y).shape, (0, 4))

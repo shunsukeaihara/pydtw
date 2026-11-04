@@ -43,44 +43,74 @@ Distance only
 
 ::
 
-    dtw1d_dist(a, b, window=None, ub=None, method="eap", metric="abs")
-    dtw2d_dist(a, b, window=None, metric="euclidean", ub=None, method="eap")
+    dtw1d_dist(a, b, window=None, ub=None, method="auto", metric="abs", dtype=numpy.float64)
+    dtw2d_dist(a, b, window=None, metric="euclidean", ub=None, method="auto", dtype=numpy.float64)
         -> cost
 
-Two-row buffer (``O(len(b))`` memory instead of ``O(len(a) * len(b))``) with
-pruning. Use this when the alignment is not needed, e.g. for nearest-neighbour
-search or distance matrices.
+``O(len(a) + len(b))`` memory, pruning, and a SIMD kernel when the CPU has
+AVX2 or NEON. Use this when the alignment is not needed, e.g. for
+nearest-neighbour search or distance matrices.
+
+Batches
+-------
+
+::
+
+    dtw1d_dist_batch(X, Y, window=None, ub=None, metric="abs", dtype=numpy.float64)
+    dtw2d_dist_batch(X, Y, window=None, metric="euclidean", ub=None, dtype=numpy.float64)
+        -> costs, shape (N,)
+    dtw1d_dist_matrix(X, Y=None, window=None, metric="abs", dtype=numpy.float64)
+    dtw2d_dist_matrix(X, Y=None, window=None, metric="euclidean", dtype=numpy.float64)
+        -> costs, shape (N, M)
+
+``*_batch`` computes the N pairs ``(X[k], Y[k])`` with one pair per SIMD lane
+(``X`` is ``(N, n)`` or ``(N, n, dim)``, ``Y`` is ``(N, m)`` or
+``(N, m, dim)``; a batch of size 1 is broadcast). ``ub`` may be a scalar or
+one bound per pair. ``*_matrix`` computes all pairs between the rows of ``X``
+and ``Y``; with ``Y=None`` the symmetric matrix of ``X`` with itself. Series
+inside a batch must share their length; group ragged data by length. Batches
+pay off for many short series; for a few long series the per-pair kernel with
+a good ``ub`` is faster.
+
+::
+
+    simd_info() -> {"simd": "avx2" | "neon" | "scalar", "lanes_float64": ..., "lanes_float32": ...}
 
 Benchmark (``python bench/bench_dist.py``, 1-d, ``n = m = 5000``, best of 3,
-one core; ``no prune`` is ``ub=numpy.inf``, the others use the automatic
-bound). The inner loop runs at about 2.2 ns per cell independent of the data;
-pruning costs nothing on hard pairs and pays off as soon as the sequences are
-similar. ``eap`` is the default because it was equal or fastest in every case.
+one core with AVX2). ``eap`` / ``pruned`` are the row kernels, ``simd`` the
+anti-diagonal kernel (default when available), ``no prune`` is ``simd`` with
+``ub=numpy.inf``.
 
-=====================================  =========  =========  =========
-case                                    no prune     pruned        eap
-=====================================  =========  =========  =========
-uniform noise                            0.056 s    0.056 s    0.059 s
-random walk                              0.056 s    0.057 s    0.057 s
-similar (shifted sine + noise)           0.056 s    0.023 s    0.023 s
-near-identical (a, a + 0.01 noise)       0.063 s    0.003 s    0.000 s
-random walk, window = 10%                0.010 s    0.011 s    0.011 s
-2-d dim = 8 random walk                  0.168 s    0.136 s    0.104 s
-1-NN search, 101 candidates, n = 1000    0.229 s    0.094 s    0.084 s
-=====================================  =========  =========  =========
+=====================================  =========  =========  =========  =========  =========
+case                                         eap     pruned   simd f64   simd f32   no prune
+=====================================  =========  =========  =========  =========  =========
+uniform noise                            0.059 s    0.057 s    0.013 s    0.006 s    0.012 s
+random walk                              0.057 s    0.059 s    0.013 s    0.006 s    0.012 s
+similar (shifted sine + noise)           0.021 s    0.022 s    0.004 s    0.002 s    0.012 s
+near-identical (a, a + 0.01 noise)       0.001 s    0.003 s    0.000 s    0.000 s    0.013 s
+random walk, window = 10%                0.011 s    0.011 s    0.001 s    0.001 s    0.001 s
+2-d dim = 8 random walk                  0.094 s    0.096 s    0.046 s    0.033 s    0.046 s
+1-NN search, 101 candidates, n = 1000    0.088 s    0.090 s    0.013 s
+=====================================  =========  =========  =========  =========  =========
 
 In the 1-NN row the best distance so far is passed as ``ub``, so candidates
-that cannot win are abandoned early.
+that cannot win are abandoned early. The same search as one
+``dtw1d_dist_batch`` call takes 0.092 s (float64) / 0.046 s (float32): a
+batch cannot exploit a tightening bound, so it wins only on short series.
+All pairs of 200 series of length 100: 0.997 s as a loop over
+``dtw1d_dist(method="eap")``, 0.159 s with ``dtw1d_dist_matrix`` (0.086 s in
+float32).
 
-Alignment, same machine (``no matrix`` is ``return_cost_matrix=False``):
+Alignment, same machine (``no matrix`` is ``return_cost_matrix=False``;
+``pruned_dtw1d`` now gets its bound from the SIMD kernel):
 
 ====================================  =========  ==========  =========  ==========
 case                                      dtw1d   no matrix     pruned   pr+no mat
 ====================================  =========  ==========  =========  ==========
-uniform noise, n = 5000                 0.094 s     0.059 s    0.144 s     0.105 s
-random walk, n = 5000                   0.098 s     0.059 s    0.148 s     0.101 s
-similar (shifted sine + noise)          0.094 s     0.064 s    0.078 s     0.030 s
-near-identical (a, a + 0.01 noise)      0.094 s     0.057 s    0.058 s     0.005 s
+uniform noise, n = 5000                 0.097 s     0.061 s    0.105 s     0.062 s
+random walk, n = 5000                   0.093 s     0.056 s    0.093 s     0.058 s
+similar (shifted sine + noise)          0.096 s     0.058 s    0.064 s     0.013 s
+near-identical (a, a + 0.01 noise)      0.094 s     0.063 s    0.052 s     0.003 s
 random walk, n = 20000                  13.8 s      2.5 s
 ====================================  =========  ==========  =========  ==========
 
@@ -92,8 +122,8 @@ Pruned alignment
 
 ::
 
-    pruned_dtw1d(a, b, window=None, method="eap", return_cost_matrix=True, metric="abs")
-    pruned_dtw2d(a, b, window=None, metric="euclidean", method="eap", return_cost_matrix=True)
+    pruned_dtw1d(a, b, window=None, method="auto", return_cost_matrix=True, metric="abs")
+    pruned_dtw2d(a, b, window=None, metric="euclidean", method="auto", return_cost_matrix=True)
         -> (cost_matrix, cost, alignment_a, alignment_b)
 
 Same result as ``dtw1d`` / ``dtw2d``. The exact cost is computed first with
@@ -121,9 +151,18 @@ Arguments
     with a narrower ``window``.
 
 ``method``
-    Pruning scheme for the two-row implementation: ``"eap"`` (EAPrunedDTW,
-    Herrmann & Webb 2021, default) or ``"pruned"`` (PrunedDTW, Silva &
-    Batista 2016). Both return the exact cost.
+    Kernel for the distance-only functions. ``"auto"`` (default) picks the
+    SIMD anti-diagonal kernel when the CPU supports AVX2 (x86-64) or NEON
+    (AArch64) and EAPrunedDTW otherwise. ``"simd"`` forces the anti-diagonal
+    kernel (with a scalar fallback), ``"eap"`` (EAPrunedDTW, Herrmann & Webb
+    2021) and ``"pruned"`` (PrunedDTW, Silva & Batista 2016) are the
+    row-oriented kernels. All return the exact cost.
+
+``dtype``
+    ``numpy.float64`` (default) or ``numpy.float32`` for the SIMD kernels.
+    float32 doubles the lanes and halves the memory traffic; the cost is then
+    accurate to about 1e-6 relative (more for very long paths), and the
+    result is still returned as a Python float / float32 array.
 
 ``return_cost_matrix``
     ``False`` skips the cost matrix (``None`` is returned in its place) and
@@ -140,6 +179,17 @@ Arguments
 Cells outside the window or pruned are ``inf`` in ``cost_matrix``. Cells above
 ``ub`` are not guaranteed to hold their exact value, only a value above ``ub``.
 ``cost_matrix`` is ``None`` when ``return_cost_matrix=False``.
+
+SIMD
+----
+
+The distance kernels are compiled three times: scalar, AVX2 + FMA and NEON.
+At first use the CPU is probed (CPUID on x86-64; NEON is always present on
+AArch64) and the best available version is selected; the wheels therefore
+run on any x86-64 or AArch64 machine. ``PYDTW_SIMD=scalar|avx2|neon|auto``
+in the environment overrides the choice (an unavailable choice falls back to
+scalar), which the test suite uses to check the scalar path. All kernels give
+the same results up to floating-point rounding.
 
 Deprecated
 ----------

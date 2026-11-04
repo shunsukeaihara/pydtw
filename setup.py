@@ -17,7 +17,9 @@ else:
 
 extensions = [Extension(
     "pydtw.dtw",
-    ["pydtw/dtw.pyx"],
+    ["pydtw/dtw.pyx", "pydtw/simd/dtw_simd.cpp"],
+    depends=["pydtw/simd/dtw_simd.hpp", "pydtw/simd/kernels.inl"],
+    include_dirs=["pydtw"],
     extra_compile_args=extra_compile_args,
     extra_link_args=extra_link_args,
     language="c++",
