@@ -43,8 +43,8 @@ Distance only
 
 ::
 
-    dtw1d_dist(a, b, window=None, ub=None, method="pruned")
-    dtw2d_dist(a, b, window=None, metric="euclidean", ub=None, method="pruned")
+    dtw1d_dist(a, b, window=None, ub=None, method="eap")
+    dtw2d_dist(a, b, window=None, metric="euclidean", ub=None, method="eap")
         -> cost
 
 Two-row buffer (``O(len(b))`` memory instead of ``O(len(a) * len(b))``) with
@@ -53,20 +53,20 @@ search or distance matrices.
 
 Benchmark (``python bench/bench_dist.py``, 1-d, ``n = m = 5000``, best of 3,
 one core; ``no prune`` is ``ub=numpy.inf``, the others use the automatic
-bound). The inner loop runs at about 2.3 ns per cell independent of the data;
+bound). The inner loop runs at about 2.2 ns per cell independent of the data;
 pruning costs nothing on hard pairs and pays off as soon as the sequences are
-similar. ``pruned`` is the default because it was the fastest in every case.
+similar. ``eap`` is the default because it was equal or fastest in every case.
 
 =====================================  =========  =========  =========
 case                                    no prune     pruned        eap
 =====================================  =========  =========  =========
-uniform noise                            0.058 s    0.059 s    0.096 s
-random walk                              0.058 s    0.054 s    0.102 s
-similar (shifted sine + noise)           0.062 s    0.023 s    0.036 s
-near-identical (a, a + 0.01 noise)       0.062 s    0.003 s    0.001 s
-random walk, window = 10%                0.012 s    0.012 s    0.019 s
-2-d dim = 8 random walk                  0.133 s    0.138 s    0.146 s
-1-NN search, 101 candidates, n = 1000    0.250 s    0.094 s    0.154 s
+uniform noise                            0.055 s    0.058 s    0.056 s
+random walk                              0.054 s    0.056 s    0.054 s
+similar (shifted sine + noise)           0.055 s    0.021 s    0.019 s
+near-identical (a, a + 0.01 noise)       0.054 s    0.003 s    0.000 s
+random walk, window = 10%                0.011 s    0.010 s    0.010 s
+2-d dim = 8 random walk                  0.123 s    0.118 s    0.118 s
+1-NN search, 101 candidates, n = 1000    0.229 s    0.094 s    0.084 s
 =====================================  =========  =========  =========
 
 In the 1-NN row the best distance so far is passed as ``ub``, so candidates
@@ -77,11 +77,11 @@ Alignment, same machine (``no matrix`` is ``return_cost_matrix=False``):
 ====================================  =========  ==========  =========  ==========
 case                                      dtw1d   no matrix     pruned   pr+no mat
 ====================================  =========  ==========  =========  ==========
-uniform noise, n = 5000                 0.096 s     0.104 s    0.142 s     0.146 s
-random walk, n = 5000                   0.098 s     0.105 s    0.144 s     0.135 s
-similar (shifted sine + noise)          0.094 s     0.101 s    0.074 s     0.033 s
-near-identical (a, a + 0.01 noise)      0.101 s     0.099 s    0.052 s     0.007 s
-random walk, n = 20000                  11.9 s      2.2 s
+uniform noise, n = 5000                 0.094 s     0.059 s    0.144 s     0.105 s
+random walk, n = 5000                   0.098 s     0.059 s    0.148 s     0.101 s
+similar (shifted sine + noise)          0.094 s     0.064 s    0.078 s     0.030 s
+near-identical (a, a + 0.01 noise)      0.094 s     0.057 s    0.058 s     0.005 s
+random walk, n = 20000                  13.8 s      2.5 s
 ====================================  =========  ==========  =========  ==========
 
 At ``n = m = 20000`` the float64 cost matrix is 3.0 GiB and the direction
@@ -92,8 +92,8 @@ Pruned alignment
 
 ::
 
-    pruned_dtw1d(a, b, window=None, method="pruned", return_cost_matrix=True)
-    pruned_dtw2d(a, b, window=None, metric="euclidean", method="pruned", return_cost_matrix=True)
+    pruned_dtw1d(a, b, window=None, method="eap", return_cost_matrix=True)
+    pruned_dtw2d(a, b, window=None, metric="euclidean", method="eap", return_cost_matrix=True)
         -> (cost_matrix, cost, alignment_a, alignment_b)
 
 Same result as ``dtw1d`` / ``dtw2d``. The exact cost is computed first with
@@ -121,9 +121,9 @@ Arguments
     with a narrower ``window``.
 
 ``method``
-    Pruning scheme for the two-row implementation: ``"pruned"`` (PrunedDTW,
-    Silva & Batista 2016, default) or ``"eap"`` (EAPrunedDTW, Herrmann & Webb
-    2021). Both return the exact cost.
+    Pruning scheme for the two-row implementation: ``"eap"`` (EAPrunedDTW,
+    Herrmann & Webb 2021, default) or ``"pruned"`` (PrunedDTW, Silva &
+    Batista 2016). Both return the exact cost.
 
 ``return_cost_matrix``
     ``False`` skips the cost matrix (``None`` is returned in its place) and

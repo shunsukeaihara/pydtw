@@ -93,11 +93,11 @@ cdef metric_ptr _metric(metric) except? NULL:
 
 
 cdef int _method_id(method) except -1:
-    if method == 'pruned':
-        return 1
     if method == 'eap':
         return 0
-    raise ValueError("method must be 'pruned' or 'eap', got {!r}".format(method))
+    if method == 'pruned':
+        return 1
+    raise ValueError("method must be 'eap' or 'pruned', got {!r}".format(method))
 
 
 cdef double _bound(ub) except? -1.0:
@@ -418,8 +418,14 @@ cdef _dtw_path(const double[:, ::1] a, const double[:, ::1] b, Py_ssize_t w, dou
         full = np.full((n + 1, m + 1), np.inf, dtype=np.float64)
         cost_mat = full
         with nogil:
-            cost = pruned_rows_core(&a[0, 0], n, &b[0, 0], m, dim, dist_func, w, ub,
-                                    &cost_mat[0, 0], m + 1, n + 1, NULL)
+            # Passing a literal NULL lets the compiler clone the core for the
+            # 1-d case with the metric test folded away (see cell_dist).
+            if dist_func == NULL:
+                cost = pruned_rows_core(&a[0, 0], n, &b[0, 0], m, dim, NULL, w, ub,
+                                        &cost_mat[0, 0], m + 1, n + 1, NULL)
+            else:
+                cost = pruned_rows_core(&a[0, 0], n, &b[0, 0], m, dim, dist_func, w, ub,
+                                        &cost_mat[0, 0], m + 1, n + 1, NULL)
         if cost == INFINITY:
             return full[1:, 1:], cost, [], []
         align_a, align_b = traceback_matrix(cost_mat)
@@ -428,8 +434,12 @@ cdef _dtw_path(const double[:, ::1] a, const double[:, ::1] b, Py_ssize_t w, dou
     dirs = dirs_np
     rows = vector[double](2 * (m + 1))
     with nogil:
-        cost = pruned_rows_core(&a[0, 0], n, &b[0, 0], m, dim, dist_func, w, ub,
-                                rows.data(), m + 1, 2, &dirs[0, 0])
+        if dist_func == NULL:
+            cost = pruned_rows_core(&a[0, 0], n, &b[0, 0], m, dim, NULL, w, ub,
+                                    rows.data(), m + 1, 2, &dirs[0, 0])
+        else:
+            cost = pruned_rows_core(&a[0, 0], n, &b[0, 0], m, dim, dist_func, w, ub,
+                                    rows.data(), m + 1, 2, &dirs[0, 0])
     if cost == INFINITY:
         return None, cost, [], []
     align_a, align_b = traceback_dirs(dirs)
@@ -451,12 +461,22 @@ cdef double _dtw_dist(const double[:, ::1] a, const double[:, ::1] b, Py_ssize_t
     with nogil:
         if auto_ub:
             bound = path_upper_bound(&a[0, 0], n, &b[0, 0], m, dim, dist_func)
+        # Literal NULL at the call site lets the compiler clone the cores for
+        # the 1-d case with the metric test folded away (see cell_dist).
         if method_id == 0:
-            result = eap_pruned_dtw_core(&a[0, 0], n, &b[0, 0], m, dim, dist_func, w, bound,
-                                         buf0.data() + 1, buf1.data() + 1)
+            if dist_func == NULL:
+                result = eap_pruned_dtw_core(&a[0, 0], n, &b[0, 0], m, dim, NULL, w, bound,
+                                             buf0.data() + 1, buf1.data() + 1)
+            else:
+                result = eap_pruned_dtw_core(&a[0, 0], n, &b[0, 0], m, dim, dist_func, w, bound,
+                                             buf0.data() + 1, buf1.data() + 1)
         else:
-            result = pruned_rows_core(&a[0, 0], n, &b[0, 0], m, dim, dist_func, w, bound,
-                                      rows.data(), m + 1, 2, NULL)
+            if dist_func == NULL:
+                result = pruned_rows_core(&a[0, 0], n, &b[0, 0], m, dim, NULL, w, bound,
+                                          rows.data(), m + 1, 2, NULL)
+            else:
+                result = pruned_rows_core(&a[0, 0], n, &b[0, 0], m, dim, dist_func, w, bound,
+                                          rows.data(), m + 1, 2, NULL)
     return result
 
 
@@ -505,7 +525,7 @@ def constrained_dtw2d(a, b, constraint=0, metric="euclidean"):
     return dtw2d(a, b, window=constraint, metric=metric)
 
 
-def dtw1d_dist(a, b, window=None, ub=None, method="pruned"):
+def dtw1d_dist(a, b, window=None, ub=None, method="eap"):
     """DTW cost of two 1-d sequences without computing the alignment.
 
     Uses O(len(b)) memory. ``window`` as in :func:`dtw1d`. ``ub`` is an
@@ -514,10 +534,9 @@ def dtw1d_dist(a, b, window=None, ub=None, method="pruned"):
     bound from a simple warping path, which keeps the result exact;
     ``np.inf`` disables pruning.
 
-    ``method`` selects the pruning scheme: ``"pruned"`` (PrunedDTW, Silva &
-    Batista 2016, default) or ``"eap"`` (EAPrunedDTW, Herrmann & Webb 2021).
-    Both are exact; ``"pruned"`` is the default because its inner loop is
-    faster in every benchmarked case.
+    ``method`` selects the pruning scheme: ``"eap"`` (EAPrunedDTW, Herrmann &
+    Webb 2021, default) or ``"pruned"`` (PrunedDTW, Silva & Batista 2016).
+    Both are exact and run the same inner loop; EAP prunes a little more.
     """
     a = _as_sequence(a, 1, "a")
     b = _as_sequence(b, 1, "b")
@@ -525,7 +544,7 @@ def dtw1d_dist(a, b, window=None, ub=None, method="pruned"):
     return _dtw_dist(a.reshape(-1, 1), b.reshape(-1, 1), w, ub, NULL, method)
 
 
-def dtw2d_dist(a, b, window=None, metric="euclidean", ub=None, method="pruned"):
+def dtw2d_dist(a, b, window=None, metric="euclidean", ub=None, method="eap"):
     """DTW cost of two multivariate sequences of shape (len, dim) without the alignment.
 
     See :func:`dtw1d_dist` for ``window``, ``ub`` and ``method``.
@@ -535,7 +554,7 @@ def dtw2d_dist(a, b, window=None, metric="euclidean", ub=None, method="pruned"):
     return _dtw_dist(a, b, w, ub, _metric(metric), method)
 
 
-def pruned_dtw1d(a, b, window=None, method="pruned", return_cost_matrix=True):
+def pruned_dtw1d(a, b, window=None, method="eap", return_cost_matrix=True):
     """Same result as :func:`dtw1d`, computed with pruning.
 
     Runs :func:`dtw1d_dist` first and then :func:`dtw1d` with ``ub`` set to
@@ -550,7 +569,7 @@ def pruned_dtw1d(a, b, window=None, method="pruned", return_cost_matrix=True):
     return _dtw_path(a2, b2, w, cost, NULL, return_cost_matrix)
 
 
-def pruned_dtw2d(a, b, window=None, metric="euclidean", method="pruned", return_cost_matrix=True):
+def pruned_dtw2d(a, b, window=None, metric="euclidean", method="eap", return_cost_matrix=True):
     """Same result as :func:`dtw2d`, computed with pruning. See :func:`pruned_dtw1d`."""
     a, b = _as_pair_2d(a, b)
     w = _resolve_window(a.shape[0], b.shape[0], window)
