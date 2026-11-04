@@ -164,10 +164,12 @@ Arguments
     the scalar row kernels is decided by the CPU, not by ``method``.
 
 ``dtype``
-    ``numpy.float64`` (default) or ``numpy.float32``. float32 doubles the
-    SIMD lanes and halves the memory traffic; the cost is then accurate to
-    about 1e-6 relative (more for very long paths), and the result is still
-    returned as a Python float / float32 array. float32 always uses the
+    Precision of the computation and of the internal buffers, as for numpy
+    ufuncs: ``numpy.float64`` (default) or ``numpy.float32``. Inputs are
+    converted to it, the dynamic programming runs in it and the result is
+    returned in it (Python float / float32 array). float32 doubles the SIMD
+    lanes and halves the memory traffic; the cost is then accurate to about
+    1e-6 relative (more for very long paths). float32 always uses the
     anti-diagonal kernel (scalar on CPUs without SIMD).
 
 ``simd``

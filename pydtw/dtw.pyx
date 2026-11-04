@@ -785,9 +785,10 @@ def dtw1d_dist(a, b, window=None, ub=None, method="eap", metric="abs", dtype=np.
     ``"none"``. All are exact. The SIMD anti-diagonal kernel is used
     automatically when the CPU supports AVX2 or NEON, the scalar row kernels
     otherwise; ``simd=False`` forces the row kernels (for benchmarking).
-    ``dtype``: ``numpy.float64`` (default) or ``numpy.float32``; float32
-    doubles the SIMD lanes at the price of about 1e-6 relative error and is
-    only available in the SIMD kernel.
+    ``dtype``: precision of the computation and its buffers, ``numpy.float64``
+    (default) or ``numpy.float32``; float32 doubles the SIMD lanes at the
+    price of about 1e-6 relative error and always runs on the anti-diagonal
+    kernel.
     """
     a = _as_sequence(a, 1, "a")
     b = _as_sequence(b, 1, "b")
