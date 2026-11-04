@@ -20,15 +20,15 @@ Series under copy-on-write; other dtypes and layouts are converted to a
 C-contiguous ``float64`` copy. Inputs are never modified. Input containing
 ``NaN`` raises ``ValueError``. 1-d functions take sequences of shape
 ``(len,)``, 2-d functions take multivariate sequences of shape ``(len, dim)``
-with the same ``dim``. The cost of a path is the sum of ``abs(a[i] - b[j])``
-(1-d) or the Euclidean distance between rows (2-d) over the aligned pairs.
+with the same ``dim``. The cost of a path is the sum of the local distance
+(``metric``) over the aligned pairs.
 
 Alignment
 ---------
 
 ::
 
-    dtw1d(a, b, window=None, ub=None, return_cost_matrix=True)
+    dtw1d(a, b, window=None, ub=None, return_cost_matrix=True, metric="abs")
     dtw2d(a, b, window=None, metric="euclidean", ub=None, return_cost_matrix=True)
         -> (cost_matrix, cost, alignment_a, alignment_b)
 
@@ -43,7 +43,7 @@ Distance only
 
 ::
 
-    dtw1d_dist(a, b, window=None, ub=None, method="eap")
+    dtw1d_dist(a, b, window=None, ub=None, method="eap", metric="abs")
     dtw2d_dist(a, b, window=None, metric="euclidean", ub=None, method="eap")
         -> cost
 
@@ -60,12 +60,12 @@ similar. ``eap`` is the default because it was equal or fastest in every case.
 =====================================  =========  =========  =========
 case                                    no prune     pruned        eap
 =====================================  =========  =========  =========
-uniform noise                            0.055 s    0.058 s    0.056 s
-random walk                              0.054 s    0.056 s    0.054 s
-similar (shifted sine + noise)           0.055 s    0.021 s    0.019 s
-near-identical (a, a + 0.01 noise)       0.054 s    0.003 s    0.000 s
-random walk, window = 10%                0.011 s    0.010 s    0.010 s
-2-d dim = 8 random walk                  0.123 s    0.118 s    0.118 s
+uniform noise                            0.056 s    0.056 s    0.059 s
+random walk                              0.056 s    0.057 s    0.057 s
+similar (shifted sine + noise)           0.056 s    0.023 s    0.023 s
+near-identical (a, a + 0.01 noise)       0.063 s    0.003 s    0.000 s
+random walk, window = 10%                0.010 s    0.011 s    0.011 s
+2-d dim = 8 random walk                  0.168 s    0.136 s    0.104 s
 1-NN search, 101 candidates, n = 1000    0.229 s    0.094 s    0.084 s
 =====================================  =========  =========  =========
 
@@ -92,7 +92,7 @@ Pruned alignment
 
 ::
 
-    pruned_dtw1d(a, b, window=None, method="eap", return_cost_matrix=True)
+    pruned_dtw1d(a, b, window=None, method="eap", return_cost_matrix=True, metric="abs")
     pruned_dtw2d(a, b, window=None, metric="euclidean", method="eap", return_cost_matrix=True)
         -> (cost_matrix, cost, alignment_a, alignment_b)
 
@@ -130,7 +130,12 @@ Arguments
     derives the alignment from a direction matrix of one byte per cell.
 
 ``metric``
-    Distance between rows for 2-d sequences. Only ``"euclidean"`` for now.
+    Local distance between aligned elements. 1-d: ``"abs"`` (default,
+    ``|a[i] - b[j]|``; ``"cityblock"`` and ``"euclidean"`` are accepted as
+    aliases) or ``"sqeuclidean"`` (``(a[i] - b[j]) ** 2``). 2-d, between
+    rows: ``"euclidean"`` (default), ``"sqeuclidean"``, ``"cityblock"``,
+    ``"chebyshev"``. Each metric is compiled into its own specialisation of
+    the inner loop, so none of them pays for the choice at run time.
 
 Cells outside the window or pruned are ``inf`` in ``cost_matrix``. Cells above
 ``ub`` are not guaranteed to hold their exact value, only a value above ``ub``.
