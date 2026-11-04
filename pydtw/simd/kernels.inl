@@ -103,15 +103,26 @@ static inline T effective_bound(T ub) {
 // reads them. Pruning: only cells reachable from "live" cells (cost <= ub) of
 // the two previous diagonals are computed, as in PrunedDTW.
 
+// Pruning modes (PYDTW_PRUNE_*): 0 none, 1 PrunedDTW (cells above ub are
+// dead), 2 EAPrunedDTW (every path still has to pay the last cell, so cells
+// above ub - d(a[n-1], b[m-1]) are dead already).
+template <class T>
+static inline T prune_threshold(int pruning, T ub, T d_last) {
+    if (pruning == 0 || std::isinf(ub)) return std::numeric_limits<T>::infinity();
+    return effective_bound<T>(pruning == 2 ? ub - d_last : ub);
+}
+
 template <class W, int METRIC>
 static typename W::T dtw_ad(const typename W::T* a, size_t n, const typename W::T* b, size_t m,
-                            size_t dim, size_t w, typename W::T ub) {
+                            size_t dim, size_t w, typename W::T ub, int pruning) {
     using T = typename W::T;
     using v = typename W::v;
     constexpr size_t L = W::L;
     const T INF = std::numeric_limits<T>::infinity();
     if (std::isnan(ub)) ub = path_bound<T>(a, n, b, m, dim, (int)METRIC);
-    const T ub_eff = effective_bound<T>(ub);
+    const T ub_final = effective_bound<T>(ub);
+    const T d_last = scalar_dist<T>(a + (n - 1) * dim, b + (m - 1) * dim, dim, (int)METRIC);
+    const T ub_eff = prune_threshold<T>(pruning, ub, d_last);
 
     const size_t na = n + L, mb = m + L;
     std::vector<T> at(dim * na, T(0)), brt(dim * mb, T(0));
@@ -133,7 +144,7 @@ static typename W::T dtw_ad(const typename W::T* a, size_t n, const typename W::
     buf[1][0] = v0;
     clo1 = chi1 = 0;
     if (v0 <= ub_eff) { llo1 = lhi1 = 0; } else { llo1 = 0; lhi1 = -1; }
-    if (n == 1 && m == 1) return v0 <= ub_eff ? v0 : INF;
+    if (n == 1 && m == 1) return v0 <= ub_final ? v0 : INF;
 
     const long nl = (long)n, ml = (long)m, wl = (long)w;
     const size_t last_K = n + m - 2;
@@ -190,7 +201,7 @@ static typename W::T dtw_ad(const typename W::T* a, size_t n, const typename W::
     // Final cell (n-1, m-1) lives on diagonal last_K at row n-1.
     if (clo1 <= nl - 1 && nl - 1 <= chi1) {
         T r = buf[1][nl - 1];
-        return r <= ub_eff ? r : INF;
+        return r <= ub_final ? r : INF;
     }
     return INF;
 }
@@ -206,13 +217,14 @@ static typename W::T dtw_ad(const typename W::T* a, size_t n, const typename W::
 
 template <class W, int METRIC>
 static void dtw_batch(const typename W::T* X, const typename W::T* Y, size_t N, size_t n, size_t m,
-                      size_t dim, size_t w, const typename W::T* ub, typename W::T* out) {
+                      size_t dim, size_t w, const typename W::T* ub, int pruning,
+                      typename W::T* out) {
     using T = typename W::T;
     using v = typename W::v;
     constexpr size_t L = W::L;
     const T INF = std::numeric_limits<T>::infinity();
     std::vector<T> A(n * dim * L), B(m * dim * L), rows(2 * (m + 1) * L);
-    alignas(64) T ubl[L], res[L];
+    alignas(64) T ubl[L], ubf[L], res[L];
 
     for (size_t c = 0; c < N; c += L) {
         const size_t lanes = std::min(L, N - c);
@@ -226,7 +238,9 @@ static void dtw_batch(const typename W::T* X, const typename W::T* Y, size_t N, 
                 for (size_t d = 0; d < dim; ++d) B[(j * dim + d) * L + l] = yk[j * dim + d];
             T u = ub[k];
             if (std::isnan(u)) u = path_bound<T>(xk, n, yk, m, dim, (int)METRIC);
-            ubl[l] = effective_bound<T>(u);
+            ubf[l] = effective_bound<T>(u);
+            ubl[l] = prune_threshold<T>(pruning, u,
+                scalar_dist<T>(xk + (n - 1) * dim, yk + (m - 1) * dim, dim, (int)METRIC));
         }
         const v ubv = W::load(ubl);
         T* prev = rows.data();
@@ -249,39 +263,42 @@ static void dtw_batch(const typename W::T* X, const typename W::T* Y, size_t N, 
                 rowmin = W::min(rowmin, left);
             }
             if (end < m) W::store(cur + (end + 1) * L, W::set1(INF));
-            // all lanes above their bound -> nothing can finish within bound
-            dead = W::hmin(W::sub(rowmin, ubv)) > T(0);
+            // All lanes above their pruning threshold -> nothing can finish
+            // within bound. Not applied to the last row: its final cell is
+            // judged against the bound itself below (the EAP threshold is
+            // tightened by the last cell's own cost).
+            if (i < n) dead = W::hmin(W::sub(rowmin, ubv)) > T(0);
             T* t = prev; prev = cur; cur = t;
         }
         W::store(res, W::load(prev + m * L));
         for (size_t l = 0; l < lanes; ++l)
-            out[c + l] = (!dead && res[l] <= ubl[l]) ? res[l] : INF;
+            out[c + l] = (!dead && res[l] <= ubf[l]) ? res[l] : INF;
     }
 }
 
 template <class W>
 static typename W::T dtw_ad_dispatch(const typename W::T* a, size_t n, const typename W::T* b, size_t m,
-                                     size_t dim, int metric, size_t w, typename W::T ub) {
+                                     size_t dim, int metric, size_t w, typename W::T ub, int pruning) {
     switch (metric) {
-        case PYDTW_M_ABS:         return dtw_ad<W, PYDTW_M_ABS>(a, n, b, m, dim, w, ub);
-        case PYDTW_M_SQDIFF:      return dtw_ad<W, PYDTW_M_SQDIFF>(a, n, b, m, dim, w, ub);
-        case PYDTW_M_EUCLIDEAN:   return dtw_ad<W, PYDTW_M_EUCLIDEAN>(a, n, b, m, dim, w, ub);
-        case PYDTW_M_SQEUCLIDEAN: return dtw_ad<W, PYDTW_M_SQEUCLIDEAN>(a, n, b, m, dim, w, ub);
-        case PYDTW_M_CITYBLOCK:   return dtw_ad<W, PYDTW_M_CITYBLOCK>(a, n, b, m, dim, w, ub);
-        default:                  return dtw_ad<W, PYDTW_M_CHEBYSHEV>(a, n, b, m, dim, w, ub);
+        case PYDTW_M_ABS:         return dtw_ad<W, PYDTW_M_ABS>(a, n, b, m, dim, w, ub, pruning);
+        case PYDTW_M_SQDIFF:      return dtw_ad<W, PYDTW_M_SQDIFF>(a, n, b, m, dim, w, ub, pruning);
+        case PYDTW_M_EUCLIDEAN:   return dtw_ad<W, PYDTW_M_EUCLIDEAN>(a, n, b, m, dim, w, ub, pruning);
+        case PYDTW_M_SQEUCLIDEAN: return dtw_ad<W, PYDTW_M_SQEUCLIDEAN>(a, n, b, m, dim, w, ub, pruning);
+        case PYDTW_M_CITYBLOCK:   return dtw_ad<W, PYDTW_M_CITYBLOCK>(a, n, b, m, dim, w, ub, pruning);
+        default:                  return dtw_ad<W, PYDTW_M_CHEBYSHEV>(a, n, b, m, dim, w, ub, pruning);
     }
 }
 
 template <class W>
 static void dtw_batch_dispatch(const typename W::T* X, const typename W::T* Y, size_t N, size_t n,
                                size_t m, size_t dim, int metric, size_t w,
-                               const typename W::T* ub, typename W::T* out) {
+                               const typename W::T* ub, int pruning, typename W::T* out) {
     switch (metric) {
-        case PYDTW_M_ABS:         dtw_batch<W, PYDTW_M_ABS>(X, Y, N, n, m, dim, w, ub, out); break;
-        case PYDTW_M_SQDIFF:      dtw_batch<W, PYDTW_M_SQDIFF>(X, Y, N, n, m, dim, w, ub, out); break;
-        case PYDTW_M_EUCLIDEAN:   dtw_batch<W, PYDTW_M_EUCLIDEAN>(X, Y, N, n, m, dim, w, ub, out); break;
-        case PYDTW_M_SQEUCLIDEAN: dtw_batch<W, PYDTW_M_SQEUCLIDEAN>(X, Y, N, n, m, dim, w, ub, out); break;
-        case PYDTW_M_CITYBLOCK:   dtw_batch<W, PYDTW_M_CITYBLOCK>(X, Y, N, n, m, dim, w, ub, out); break;
-        default:                  dtw_batch<W, PYDTW_M_CHEBYSHEV>(X, Y, N, n, m, dim, w, ub, out); break;
+        case PYDTW_M_ABS:         dtw_batch<W, PYDTW_M_ABS>(X, Y, N, n, m, dim, w, ub, pruning, out); break;
+        case PYDTW_M_SQDIFF:      dtw_batch<W, PYDTW_M_SQDIFF>(X, Y, N, n, m, dim, w, ub, pruning, out); break;
+        case PYDTW_M_EUCLIDEAN:   dtw_batch<W, PYDTW_M_EUCLIDEAN>(X, Y, N, n, m, dim, w, ub, pruning, out); break;
+        case PYDTW_M_SQEUCLIDEAN: dtw_batch<W, PYDTW_M_SQEUCLIDEAN>(X, Y, N, n, m, dim, w, ub, pruning, out); break;
+        case PYDTW_M_CITYBLOCK:   dtw_batch<W, PYDTW_M_CITYBLOCK>(X, Y, N, n, m, dim, w, ub, pruning, out); break;
+        default:                  dtw_batch<W, PYDTW_M_CHEBYSHEV>(X, Y, N, n, m, dim, w, ub, pruning, out); break;
     }
 }

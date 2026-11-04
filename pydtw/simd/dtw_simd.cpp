@@ -214,45 +214,47 @@ template <> struct V<float> {
 // ---------------------------------------------------------------------------
 template <class T>
 static T dtw_ad_entry(const T* a, size_t n, const T* b, size_t m, size_t dim, int metric,
-                      size_t w, T ub) {
+                      size_t w, T ub, int pruning) {
     switch (pydtw_simd_level()) {
 #if defined(PYDTW_X86)
-        case 1: return pydtw_avx2::dtw_ad_dispatch<pydtw_avx2::V<T>>(a, n, b, m, dim, metric, w, ub);
+        case 1: return pydtw_avx2::dtw_ad_dispatch<pydtw_avx2::V<T>>(a, n, b, m, dim, metric, w, ub, pruning);
 #endif
 #if defined(PYDTW_ARM64)
-        case 2: return pydtw_neon::dtw_ad_dispatch<pydtw_neon::V<T>>(a, n, b, m, dim, metric, w, ub);
+        case 2: return pydtw_neon::dtw_ad_dispatch<pydtw_neon::V<T>>(a, n, b, m, dim, metric, w, ub, pruning);
 #endif
-        default: return pydtw_scalar::dtw_ad_dispatch<pydtw_scalar::V<T>>(a, n, b, m, dim, metric, w, ub);
+        default: return pydtw_scalar::dtw_ad_dispatch<pydtw_scalar::V<T>>(a, n, b, m, dim, metric, w, ub, pruning);
     }
 }
 
 template <class T>
 static void dtw_batch_entry(const T* X, const T* Y, size_t N, size_t n, size_t m, size_t dim,
-                            int metric, size_t w, const T* ub, T* out) {
+                            int metric, size_t w, const T* ub, int pruning, T* out) {
     switch (pydtw_simd_level()) {
 #if defined(PYDTW_X86)
-        case 1: pydtw_avx2::dtw_batch_dispatch<pydtw_avx2::V<T>>(X, Y, N, n, m, dim, metric, w, ub, out); return;
+        case 1: pydtw_avx2::dtw_batch_dispatch<pydtw_avx2::V<T>>(X, Y, N, n, m, dim, metric, w, ub, pruning, out); return;
 #endif
 #if defined(PYDTW_ARM64)
-        case 2: pydtw_neon::dtw_batch_dispatch<pydtw_neon::V<T>>(X, Y, N, n, m, dim, metric, w, ub, out); return;
+        case 2: pydtw_neon::dtw_batch_dispatch<pydtw_neon::V<T>>(X, Y, N, n, m, dim, metric, w, ub, pruning, out); return;
 #endif
-        default: pydtw_scalar::dtw_batch_dispatch<pydtw_scalar::V<T>>(X, Y, N, n, m, dim, metric, w, ub, out); return;
+        default: pydtw_scalar::dtw_batch_dispatch<pydtw_scalar::V<T>>(X, Y, N, n, m, dim, metric, w, ub, pruning, out); return;
     }
 }
 
 extern "C" double pydtw_dtw_ad_f64(const double* a, size_t n, const double* b, size_t m,
-                                   size_t dim, int metric, size_t w, double ub) {
-    return dtw_ad_entry<double>(a, n, b, m, dim, metric, w, ub);
+                                   size_t dim, int metric, size_t w, double ub, int pruning) {
+    return dtw_ad_entry<double>(a, n, b, m, dim, metric, w, ub, pruning);
 }
 extern "C" float pydtw_dtw_ad_f32(const float* a, size_t n, const float* b, size_t m,
-                                  size_t dim, int metric, size_t w, float ub) {
-    return dtw_ad_entry<float>(a, n, b, m, dim, metric, w, ub);
+                                  size_t dim, int metric, size_t w, float ub, int pruning) {
+    return dtw_ad_entry<float>(a, n, b, m, dim, metric, w, ub, pruning);
 }
 extern "C" void pydtw_dtw_batch_f64(const double* X, const double* Y, size_t N, size_t n, size_t m,
-                                    size_t dim, int metric, size_t w, const double* ub, double* out) {
-    dtw_batch_entry<double>(X, Y, N, n, m, dim, metric, w, ub, out);
+                                    size_t dim, int metric, size_t w, const double* ub, int pruning,
+                                    double* out) {
+    dtw_batch_entry<double>(X, Y, N, n, m, dim, metric, w, ub, pruning, out);
 }
 extern "C" void pydtw_dtw_batch_f32(const float* X, const float* Y, size_t N, size_t n, size_t m,
-                                    size_t dim, int metric, size_t w, const float* ub, float* out) {
-    dtw_batch_entry<float>(X, Y, N, n, m, dim, metric, w, ub, out);
+                                    size_t dim, int metric, size_t w, const float* ub, int pruning,
+                                    float* out) {
+    dtw_batch_entry<float>(X, Y, N, n, m, dim, metric, w, ub, pruning, out);
 }

@@ -39,8 +39,9 @@ Distance only (much faster, O(len(a) + len(b)) memory)::
 
     from pydtw import dtw1d_dist
 
-    d = dtw1d_dist(a, b)                      # exact, pruned, SIMD when available
+    d = dtw1d_dist(a, b)                      # exact; EAPrunedDTW pruning, SIMD when available
     d = dtw1d_dist(a, b, window=20)           # Sakoe-Chiba window
+    d = dtw1d_dist(a, b, method="none")       # no pruning
     d = dtw1d_dist(a, b, dtype=np.float32)    # twice the SIMD lanes, ~1e-6 accuracy
 
 Nearest neighbour with a tightening bound::
@@ -99,23 +100,24 @@ Distance
 
 ::
 
-    dtw1d_dist(a, b, window=None, ub=None, method="auto", metric="abs", dtype=numpy.float64)
-    dtw2d_dist(a, b, window=None, metric="euclidean", ub=None, method="auto", dtype=numpy.float64)
+    dtw1d_dist(a, b, window=None, ub=None, method="eap", metric="abs", dtype=numpy.float64, simd=True)
+    dtw2d_dist(a, b, window=None, metric="euclidean", ub=None, method="eap", dtype=numpy.float64, simd=True)
         -> cost
 
-Cost only, ``O(len(a) + len(b))`` memory, pruned, SIMD when the CPU has
-AVX2 or NEON.
+Cost only, ``O(len(a) + len(b))`` memory, pruned according to ``method``,
+computed with the SIMD kernel when the CPU has AVX2 or NEON and with the
+scalar row kernels otherwise.
 
 Batches
 -------
 
 ::
 
-    dtw1d_dist_batch(X, Y, window=None, ub=None, metric="abs", dtype=numpy.float64)
-    dtw2d_dist_batch(X, Y, window=None, metric="euclidean", ub=None, dtype=numpy.float64)
+    dtw1d_dist_batch(X, Y, window=None, ub=None, method="eap", metric="abs", dtype=numpy.float64)
+    dtw2d_dist_batch(X, Y, window=None, metric="euclidean", ub=None, method="eap", dtype=numpy.float64)
         -> costs, shape (N,)
-    dtw1d_dist_matrix(X, Y=None, window=None, metric="abs", dtype=numpy.float64)
-    dtw2d_dist_matrix(X, Y=None, window=None, metric="euclidean", dtype=numpy.float64)
+    dtw1d_dist_matrix(X, Y=None, window=None, method="eap", metric="abs", dtype=numpy.float64)
+    dtw2d_dist_matrix(X, Y=None, window=None, metric="euclidean", method="eap", dtype=numpy.float64)
         -> costs, shape (N, M)
 
 ``*_batch`` computes the N pairs ``(X[k], Y[k])`` with one pair per SIMD lane
@@ -155,18 +157,23 @@ Arguments
     with a narrower ``window``.
 
 ``method``
-    Kernel for the distance-only functions. ``"auto"`` (default) picks the
-    SIMD anti-diagonal kernel when the CPU supports AVX2 (x86-64) or NEON
-    (AArch64) and EAPrunedDTW otherwise. ``"simd"`` forces the anti-diagonal
-    kernel (with a scalar fallback), ``"eap"`` (EAPrunedDTW, Herrmann & Webb
-    2021) and ``"pruned"`` (PrunedDTW, Silva & Batista 2016) are the
-    row-oriented kernels. All return the exact cost.
+    Pruning scheme of the distance-only functions: ``"eap"`` (EAPrunedDTW,
+    Herrmann & Webb 2021, default), ``"pruned"`` (PrunedDTW, Silva & Batista
+    2016) or ``"none"``. All return the exact cost; they differ in how many
+    cells they skip. Whether the computation runs on the SIMD kernel or on
+    the scalar row kernels is decided by the CPU, not by ``method``.
 
 ``dtype``
-    ``numpy.float64`` (default) or ``numpy.float32`` for the SIMD kernels.
-    float32 doubles the lanes and halves the memory traffic; the cost is then
-    accurate to about 1e-6 relative (more for very long paths), and the
-    result is still returned as a Python float / float32 array.
+    ``numpy.float64`` (default) or ``numpy.float32``. float32 doubles the
+    SIMD lanes and halves the memory traffic; the cost is then accurate to
+    about 1e-6 relative (more for very long paths), and the result is still
+    returned as a Python float / float32 array. float32 always uses the
+    anti-diagonal kernel (scalar on CPUs without SIMD).
+
+``simd``
+    ``True`` (default) uses the SIMD anti-diagonal kernel when the CPU has
+    one; ``False`` forces the scalar row kernels. Exists for benchmarking the
+    kernels against each other; results are identical up to rounding.
 
 ``return_cost_matrix``
     ``False`` skips the cost matrix (``None`` is returned in its place) and
@@ -222,29 +229,30 @@ Distance
 --------
 
 ``python bench/bench_dist.py``, 1-d, ``n = m = 5000``, best of 3, one core
-with AVX2. ``eap`` / ``pruned`` are the row kernels, ``simd`` the
-anti-diagonal kernel (default when available), ``no prune`` is ``simd`` with
-``ub=numpy.inf``.
+with AVX2. Rows are data sets, columns are pruning scheme (``method``) by
+kernel: ``scalar`` is the row kernels (``simd=False``), ``simd f64`` /
+``simd f32`` the anti-diagonal kernel in float64 / float32.
 
-=====================================  =========  =========  =========  =========  =========
-case                                         eap     pruned   simd f64   simd f32   no prune
-=====================================  =========  =========  =========  =========  =========
-uniform noise                            0.059 s    0.057 s    0.013 s    0.006 s    0.012 s
-random walk                              0.057 s    0.059 s    0.013 s    0.006 s    0.012 s
-similar (shifted sine + noise)           0.021 s    0.022 s    0.004 s    0.002 s    0.012 s
-near-identical (a, a + 0.01 noise)       0.001 s    0.003 s    0.000 s    0.000 s    0.013 s
-random walk, window = 10%                0.011 s    0.011 s    0.001 s    0.001 s    0.001 s
-2-d dim = 8 random walk                  0.094 s    0.096 s    0.046 s    0.033 s    0.046 s
-1-NN search, 101 candidates, n = 1000    0.088 s    0.090 s    0.013 s
-=====================================  =========  =========  =========  =========  =========
+====================================  =======  =======  =======  =======  =======  =======  =======  =======  =======
+\                                     scalar                     simd f64                   simd f32
+------------------------------------  -------------------------  -------------------------  -------------------------
+case                                     none   pruned      eap     none   pruned      eap     none   pruned      eap
+====================================  =======  =======  =======  =======  =======  =======  =======  =======  =======
+uniform noise                         0.055 s  0.057 s  0.058 s  0.015 s  0.015 s  0.014 s  0.010 s  0.008 s  0.009 s
+random walk                           0.070 s  0.060 s  0.056 s  0.014 s  0.015 s  0.014 s  0.006 s  0.007 s  0.006 s
+similar (shifted sine + noise)        0.064 s  0.029 s  0.027 s  0.020 s  0.005 s  0.005 s  0.009 s  0.002 s  0.002 s
+near-identical (a, a + 0.01 noise)    0.073 s  0.005 s  0.001 s  0.019 s  0.000 s  0.000 s  0.009 s  0.000 s  0.000 s
+random walk, window = 10%             0.014 s  0.013 s  0.014 s  0.002 s  0.002 s  0.002 s  0.001 s  0.001 s  0.001 s
+2-d dim = 8 random walk               0.226 s  0.199 s  0.115 s  0.048 s  0.045 s  0.046 s  0.024 s  0.023 s  0.023 s
+1-NN, 101 candidates, n = 1000        0.240 s  0.110 s  0.103 s  0.052 s  0.023 s  0.021 s  0.030 s  0.011 s  0.014 s
+====================================  =======  =======  =======  =======  =======  =======  =======  =======  =======
 
 In the 1-NN row the best distance so far is passed as ``ub``, so candidates
 that cannot win are abandoned early. The same search as one
-``dtw1d_dist_batch`` call takes 0.092 s (float64) / 0.046 s (float32): a
+``dtw1d_dist_batch`` call takes 0.103 s (float64) / 0.053 s (float32): a
 batch cannot exploit a tightening bound, so it wins only on short series.
-All pairs of 200 series of length 100: 0.997 s as a loop over
-``dtw1d_dist(method="eap")``, 0.159 s with ``dtw1d_dist_matrix`` (0.086 s in
-float32).
+All pairs of 200 series of length 100: 0.405 s as a loop over
+``dtw1d_dist``, 0.188 s with ``dtw1d_dist_matrix`` (0.097 s in float32).
 
 Alignment
 ---------
@@ -255,10 +263,10 @@ Same machine; ``no matrix`` is ``return_cost_matrix=False``, ``pruned`` is
 ====================================  =========  ==========  =========  ==========
 case                                      dtw1d   no matrix     pruned   pr+no mat
 ====================================  =========  ==========  =========  ==========
-uniform noise, n = 5000                 0.097 s     0.061 s    0.105 s     0.062 s
-random walk, n = 5000                   0.093 s     0.056 s    0.093 s     0.058 s
-similar (shifted sine + noise)          0.096 s     0.058 s    0.064 s     0.013 s
-near-identical (a, a + 0.01 noise)      0.094 s     0.063 s    0.052 s     0.003 s
+uniform noise, n = 5000                 0.116 s     0.067 s    0.117 s     0.084 s
+random walk, n = 5000                   0.104 s     0.062 s    0.098 s     0.057 s
+similar (shifted sine + noise)          0.100 s     0.083 s    0.063 s     0.011 s
+near-identical (a, a + 0.01 noise)      0.109 s     0.089 s    0.062 s     0.005 s
 random walk, n = 20000                  13.8 s      2.5 s
 ====================================  =========  ==========  =========  ==========
 
