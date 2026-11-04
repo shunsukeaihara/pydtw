@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pydtw"
-version = "3.0.0"
+version = "3.1.0"
 description = "Fast Implementation of Dynamic Time Warping"
 readme = "README.rst"
 license = "MIT"
@@ -26,7 +26,7 @@ Homepage = "https://github.com/shunsukeaihara/pydtw"
 Source = "https://github.com/shunsukeaihara/pydtw"
 
 [project.optional-dependencies]
-test = ["pytest"]
+test = ["pytest", "pandas"]
 
 [tool.setuptools.packages.find]
 include = ["pydtw*"]
