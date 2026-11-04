@@ -3,6 +3,7 @@ import warnings
 from unittest import TestCase
 
 import numpy as np
+import pytest
 
 from pydtw import (dtw1d, dtw2d, dtw1d_dist, dtw2d_dist, pruned_dtw1d, pruned_dtw2d,
                    constrained_dtw1d, constrained_dtw2d)
@@ -318,3 +319,147 @@ class DtwDistTest(TestCase):
             dtw2d_dist(np.zeros((3, 2)), np.zeros((3, 2)), metric="cosine")
         with self.assertRaises(ValueError):
             dtw1d_dist(np.zeros(3), np.zeros(3), method="fast")
+
+
+class InputHandlingTest(TestCase):
+    def test_read_only_arrays(self):
+        rng = np.random.default_rng(20)
+        a, b = rng.random(30), rng.random(40)
+        ra, rb = a.copy(), b.copy()
+        ra.flags.writeable = False
+        rb.flags.writeable = False
+        self.assertEqual(dtw1d_dist(ra, rb), dtw1d_dist(a, b))
+        self.assertEqual(dtw1d(ra, rb)[1:], dtw1d(a, b)[1:])
+        a2, b2 = rng.random((30, 3)), rng.random((40, 3))
+        ra2, rb2 = a2.copy(), b2.copy()
+        ra2.flags.writeable = False
+        rb2.flags.writeable = False
+        self.assertEqual(dtw2d_dist(ra2, rb2), dtw2d_dist(a2, b2))
+        self.assertEqual(pruned_dtw2d(ra2, rb2)[1:], dtw2d(a2, b2)[1:])
+
+    def test_pandas(self):
+        pd = pytest.importorskip("pandas")
+        rng = np.random.default_rng(21)
+        a, b = rng.random(30), rng.random(40)
+        sa, sb = pd.Series(a), pd.Series(b)
+        self.assertEqual(dtw1d_dist(sa, sb), dtw1d_dist(a, b))
+        self.assertEqual(dtw1d(sa, sb)[1:], dtw1d(a, b)[1:])
+        self.assertEqual(dtw1d(sa[5:], sb)[1:], dtw1d(a[5:], b)[1:])
+        df = pd.DataFrame({"x": a, "y": a * 2})
+        self.assertEqual(dtw1d_dist(df["x"], sb), dtw1d_dist(a, b))
+        self.assertEqual(dtw2d_dist(df, pd.DataFrame({"x": b, "y": b * 2})),
+                         dtw2d_dist(np.c_[a, a * 2], np.c_[b, b * 2]))
+        self.assertEqual(dtw1d_dist(pd.Series(a, dtype="Float64"), sb), dtw1d_dist(a, b))
+        # inputs are not modified
+        self.assertTrue(np.array_equal(sa.to_numpy(), a))
+
+    def test_nan_raises(self):
+        a = np.array([0.0, 1.0, np.nan])
+        b = np.array([0.0, 1.0, 2.0])
+        for f in (dtw1d, dtw1d_dist, pruned_dtw1d):
+            with self.assertRaises(ValueError):
+                f(a, b)
+            with self.assertRaises(ValueError):
+                f(b, a)
+        with self.assertRaises(ValueError):
+            dtw2d(np.c_[a, b], np.c_[b, b])
+        with self.assertRaises(ValueError):
+            dtw2d_dist(np.c_[b, b], np.c_[a, b])
+
+
+class NoCostMatrixTest(TestCase):
+    def test_same_alignment_as_matrix_version(self):
+        rng = np.random.default_rng(30)
+        for n, m in [(1, 1), (1, 8), (8, 1), (10, 10), (20, 35), (35, 20), (120, 100)]:
+            a, b = np.cumsum(rng.normal(size=n)), np.cumsum(rng.normal(size=m))
+            a2, b2 = np.cumsum(rng.normal(size=(n, 3)), axis=0), np.cumsum(rng.normal(size=(m, 3)), axis=0)
+            band = int(rng.integers(0, 40))
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                for f, x, y in ((dtw1d, a, b), (pruned_dtw1d, a, b), (dtw2d, a2, b2), (pruned_dtw2d, a2, b2)):
+                    for kw in ({}, {"window": band}):
+                        ref = f(x, y, **kw)
+                        got = f(x, y, return_cost_matrix=False, **kw)
+                        self.assertIsNone(got[0], (f.__name__, n, m, kw))
+                        self.assertEqual(got[1:], ref[1:], (f.__name__, n, m, kw))
+                        self.assertIsInstance(ref[0], np.ndarray)
+
+    def test_upper_bound(self):
+        a = np.array([0, 0, 1, 1, 2, 4, 2, 1, 2, 0], dtype=np.float64)
+        b = np.array([1, 1, 1, 2, 2, 2, 2, 3, 2, 0], dtype=np.float64)
+        ref = dtw1d(a, b)
+        got = dtw1d(a, b, ub=4.0, return_cost_matrix=False)
+        self.assertEqual(got[1:], ref[1:])
+        got = dtw1d(a, b, ub=3.9, return_cost_matrix=False)
+        self.assertEqual(got, (None, np.inf, [], []))
+        rng = np.random.default_rng(31)
+        for _ in range(50):
+            n, m = rng.integers(1, 50, size=2)
+            x, y = np.cumsum(rng.normal(size=n)), np.cumsum(rng.normal(size=m))
+            ref = dtw1d(x, y)
+            self.assertEqual(dtw1d(x, y, ub=ref[1], return_cost_matrix=False)[1:], ref[1:], (n, m))
+
+
+class MetricTest(TestCase):
+    METRICS_2D = {
+        "euclidean": lambda u, v: np.sqrt(np.sum((u - v) ** 2)),
+        "sqeuclidean": lambda u, v: np.sum((u - v) ** 2),
+        "cityblock": lambda u, v: np.sum(np.abs(u - v)),
+        "chebyshev": lambda u, v: np.max(np.abs(u - v)),
+    }
+
+    @staticmethod
+    def reference(a, b, local):
+        n, m = len(a), len(b)
+        D = np.full((n + 1, m + 1), np.inf)
+        D[0, 0] = 0.0
+        for i in range(1, n + 1):
+            for j in range(1, m + 1):
+                D[i, j] = local(a[i - 1], b[j - 1]) + min(D[i - 1, j], D[i, j - 1], D[i - 1, j - 1])
+        return D[n, m]
+
+    def test_2d_metrics_match_reference(self):
+        rng = np.random.default_rng(40)
+        for n, m, d in [(1, 1, 2), (7, 5, 1), (12, 15, 3), (30, 20, 5)]:
+            a, b = rng.random((n, d)), rng.random((m, d))
+            for name, local in self.METRICS_2D.items():
+                ref = self.reference(a, b, local)
+                self.assertAlmostEqual(dtw2d(a, b, metric=name)[1], ref, msg=(name, n, m, d))
+                self.assertAlmostEqual(dtw2d(a, b, metric=name, return_cost_matrix=False)[1], ref)
+                for method in ("eap", "pruned"):
+                    self.assertAlmostEqual(dtw2d_dist(a, b, metric=name, method=method), ref, msg=(name, method))
+                    self.assertAlmostEqual(dtw2d_dist(a, b, metric=name, method=method, ub=np.inf), ref)
+                    self.assertAlmostEqual(pruned_dtw2d(a, b, metric=name, method=method)[1], ref)
+
+    def test_1d_metrics(self):
+        rng = np.random.default_rng(41)
+        for n, m in [(1, 1), (9, 4), (25, 30)]:
+            a, b = rng.random(n), rng.random(m)
+            ref_abs = self.reference(a, b, lambda u, v: abs(u - v))
+            ref_sq = self.reference(a, b, lambda u, v: (u - v) ** 2)
+            for name in ("abs", "cityblock", "euclidean"):
+                self.assertAlmostEqual(dtw1d(a, b, metric=name)[1], ref_abs, msg=(name, n, m))
+                self.assertAlmostEqual(dtw1d_dist(a, b, metric=name), ref_abs, msg=(name, n, m))
+            self.assertAlmostEqual(dtw1d(a, b, metric="sqeuclidean")[1], ref_sq, msg=(n, m))
+            self.assertAlmostEqual(dtw1d(a, b, metric="sqeuclidean", return_cost_matrix=False)[1], ref_sq)
+            for method in ("eap", "pruned"):
+                self.assertAlmostEqual(dtw1d_dist(a, b, metric="sqeuclidean", method=method), ref_sq, msg=method)
+                self.assertAlmostEqual(pruned_dtw1d(a, b, metric="sqeuclidean", method=method)[1], ref_sq)
+            # 1-d sqeuclidean equals 2-d sqeuclidean with dim = 1 (up to rounding:
+            # the n-d loop may be compiled with fused multiply-add)
+            self.assertAlmostEqual(dtw1d_dist(a, b, metric="sqeuclidean"),
+                                   dtw2d_dist(a.reshape(-1, 1), b.reshape(-1, 1), metric="sqeuclidean"),
+                                   places=12)
+
+    def test_invalid_metric(self):
+        a, b = np.zeros(3), np.zeros(3)
+        for bad in ("cosine", "chebyshev", None, 3):
+            with self.assertRaises(ValueError):
+                dtw1d(a, b, metric=bad)
+            with self.assertRaises(ValueError):
+                dtw1d_dist(a, b, metric=bad)
+        for bad in ("abs", "cosine", None):
+            with self.assertRaises(ValueError):
+                dtw2d(np.zeros((3, 2)), np.zeros((3, 2)), metric=bad)
+            with self.assertRaises(ValueError):
+                dtw2d_dist(np.zeros((3, 2)), np.zeros((3, 2)), metric=bad)

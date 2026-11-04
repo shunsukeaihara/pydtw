@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
-"""Benchmark of the distance-only API: no pruning vs PrunedDTW vs EAPrunedDTW.
+"""Benchmark of the distance-only API (no pruning vs PrunedDTW vs EAPrunedDTW)
+and of the alignment API (with and without the cost matrix).
 
 Run with ``python bench/bench_dist.py`` after ``pip install -e .``.
 """
@@ -7,7 +8,7 @@ import time
 
 import numpy as np
 
-from pydtw import dtw1d_dist, dtw2d_dist
+from pydtw import dtw1d, dtw1d_dist, dtw2d_dist, pruned_dtw1d
 
 
 def best_of(f, *args, reps=3, **kw):
@@ -65,6 +66,14 @@ def main():
     print("\n1-NN search, {} candidates, n = {}".format(len(cands), n))
     print("{:34s} {:8.3f}s {:8.3f}s {:8.3f}s".format(
         "best-so-far as ub", best_of(nn_no_prune), best_of(nn, "pruned"), best_of(nn, "eap")))
+
+    n = 5000
+    print("\nalignment, 1-d, n = m = {}".format(n))
+    print("{:34s} {:>9s} {:>9s} {:>9s} {:>9s}".format("case", "dtw1d", "no matrix", "pruned", "pr+no mat"))
+    for name, (x, y) in cases.items():
+        print("{:34s} {:8.3f}s {:8.3f}s {:8.3f}s {:8.3f}s".format(
+            name, best_of(dtw1d, x, y), best_of(dtw1d, x, y, return_cost_matrix=False),
+            best_of(pruned_dtw1d, x, y), best_of(pruned_dtw1d, x, y, return_cost_matrix=False)))
 
 
 if __name__ == "__main__":
